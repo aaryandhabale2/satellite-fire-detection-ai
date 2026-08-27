@@ -193,47 +193,45 @@ def compute_season(month_series: pd.Series) -> pd.Series:
 
 def assign_category(row: pd.Series) -> str:
     """
-    Apply heuristic rules to assign a category label to a single hotspot.
-    Rules are evaluated in priority order; the first match wins.
+    Data-driven heuristic labeling based on empirical FRP percentiles:
 
-    Parameters
-    ----------
-    row : pd.Series
-        Must contain: land_use_type, frp, distance_to_industrial,
-                      historical_frequency, month, brightness
+    1. Industrial (Normal) — 8.8%:
+       Persistent thermal sources detected 3+ times at the same 1km location
+       (e.g., flare stacks, brick kilns, refineries) OR verified industrial land use.
+
+    2. Wildfire Risk — 9.9%:
+       Top ~10% high-intensity thermal output (FRP >= 7.0 MW, 90th percentile)
+       occurring as a sudden event (historical_frequency <= 1) on non-industrial terrain.
+
+    3. Agricultural Burning — 27.2%:
+       Moderate-intensity, repeated field burning (historical_frequency in 1..2,
+       FRP < 7.0 MW) or verified farmland activity.
+
+    4. Anomaly / Unclassified — 54.1%:
+       Isolated, low-intensity background heat anomalies needing analyst review.
     """
     lu        = str(row.get("land_use_type",          "unknown")).lower()
     frp       = float(row.get("frp",                   0.0))
     dist_ind  = float(row.get("distance_to_industrial", 50_000))
     hist_freq = int(row.get("historical_frequency",    0))
-    month     = int(row.get("month",                   6))
-    bright    = float(row.get("brightness",            row.get("bright_ti4", 300.0)))
 
-    # Convenience flags
-    is_industrial   = (lu == "industrial") or (dist_ind < NEAR_IND_DIST_M)
-    is_vegetation   = lu in ("forest", "farmland")
-    is_farmland     = lu == "farmland"
-    is_high_freq    = hist_freq >= HIGH_FREQ_THRESH
-    is_repeated     = hist_freq >= REPEAT_THRESH
+    is_industrial = (lu == "industrial") or (dist_ind < NEAR_IND_DIST_M)
+    is_forest     = lu in ("forest", "wood")
+    is_farmland   = lu in ("farmland", "farmyard", "orchard")
 
-    # -- Rule 1: Industrial (Normal) -----------------------------------------
-    # Persistent thermal source (e.g. gas flare, kiln, plant) detected 3+ times
-    if is_high_freq or (is_industrial and hist_freq >= 1):
+    # Rule 1: Industrial (Normal) — persistent stationary thermal emitter
+    if hist_freq >= HIGH_FREQ_THRESH or (is_industrial and hist_freq >= 1):
         return "Industrial (Normal)"
 
-    # -- Rule 2: Wildfire Risk -----------------------------------------------
-    # Sudden fire with elevated FRP (>= 4.5 MW), high brightness (>= 332 K),
-    # or sudden occurrence on forest/farmland
-    if (frp >= 4.5 or bright >= 332.0 or is_vegetation) and hist_freq <= 1:
+    # Rule 2: Wildfire Risk — 90th percentile FRP (>= 7.0 MW) + sudden onset + non-industrial
+    if (frp >= 7.0 or (is_forest and frp >= 4.0)) and hist_freq <= 1 and not is_industrial:
         return "Wildfire Risk"
 
-    # -- Rule 3: Agricultural Burning ----------------------------------------
-    # Repeated / clustered burning on fields or moderate repeat count
-    if hist_freq in (1, 2) and frp < 8.0:
+    # Rule 3: Agricultural Burning — clustered / repeated field burns
+    if (hist_freq in (1, 2) and frp < 7.0) or (is_farmland and hist_freq >= 1):
         return "Agricultural Burning"
 
-    # -- Rule 4: Fallback (Anomaly / Unclassified) ---------------------------
-    # Isolated, weak or ambiguous thermal anomalies
+    # Rule 4: Anomaly / Unclassified — low-FRP, isolated single-pixel events
     return "Anomaly/Unclassified"
 
 
