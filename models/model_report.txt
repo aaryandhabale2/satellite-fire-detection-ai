@@ -10,21 +10,21 @@ CLASSIFICATION REPORT (test set)
 ---------------------------------
                       precision    recall  f1-score   support
 
-Agricultural Burning     1.0000    1.0000    1.0000         9
-Anomaly/Unclassified     0.9872    1.0000    0.9935        77
+Agricultural Burning     1.0000    1.0000    1.0000        21
+Anomaly/Unclassified     1.0000    1.0000    1.0000        29
  Industrial (Normal)     1.0000    1.0000    1.0000         8
-       Wildfire Risk     0.0000    0.0000    0.0000         1
+       Wildfire Risk     1.0000    1.0000    1.0000        37
 
-            accuracy                         0.9895        95
-           macro avg     0.7468    0.7500    0.7484        95
-        weighted avg     0.9791    0.9895    0.9842        95
+            accuracy                         1.0000        95
+           macro avg     1.0000    1.0000    1.0000        95
+        weighted avg     1.0000    1.0000    1.0000        95
 
 CONFUSION MATRIX
 -----------------
-[[ 9  0  0  0]
- [ 0 77  0  0]
+[[21  0  0  0]
+ [ 0 29  0  0]
  [ 0  0  8  0]
- [ 0  1  0  0]]
+ [ 0  0  0 37]]
 
 Rows = True labels, Cols = Predicted labels
 Classes: ['Agricultural Burning', 'Anomaly/Unclassified', 'Industrial (Normal)', 'Wildfire Risk']

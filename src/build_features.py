@@ -200,39 +200,40 @@ def assign_category(row: pd.Series) -> str:
     ----------
     row : pd.Series
         Must contain: land_use_type, frp, distance_to_industrial,
-                      historical_frequency, month
+                      historical_frequency, month, brightness
     """
     lu        = str(row.get("land_use_type",          "unknown")).lower()
     frp       = float(row.get("frp",                   0.0))
     dist_ind  = float(row.get("distance_to_industrial", 50_000))
     hist_freq = int(row.get("historical_frequency",    0))
     month     = int(row.get("month",                   6))
+    bright    = float(row.get("brightness",            row.get("bright_ti4", 300.0)))
 
     # Convenience flags
     is_industrial   = (lu == "industrial") or (dist_ind < NEAR_IND_DIST_M)
     is_vegetation   = lu in ("forest", "farmland")
     is_farmland     = lu == "farmland"
-    is_agri_month   = month in AGRI_MONTHS
     is_high_freq    = hist_freq >= HIGH_FREQ_THRESH
     is_repeated     = hist_freq >= REPEAT_THRESH
-    is_high_frp     = frp >= HIGH_FRP_THRESH
 
     # -- Rule 1: Industrial (Normal) -----------------------------------------
     # Persistent thermal source (e.g. gas flare, kiln, plant) detected 3+ times
-    if is_high_freq or (is_industrial and is_repeated):
+    if is_high_freq or (is_industrial and hist_freq >= 1):
         return "Industrial (Normal)"
 
     # -- Rule 2: Wildfire Risk -----------------------------------------------
-    # Elevated FRP intensity with low historical frequency
-    if frp >= 15.0 and not is_high_freq:
+    # Sudden fire with elevated FRP (>= 4.5 MW), high brightness (>= 332 K),
+    # or sudden occurrence on forest/farmland
+    if (frp >= 4.5 or bright >= 332.0 or is_vegetation) and hist_freq <= 1:
         return "Wildfire Risk"
 
     # -- Rule 3: Agricultural Burning ----------------------------------------
-    # Repeated / clustered field burning
-    if is_repeated and not is_high_freq:
+    # Repeated / clustered burning on fields or moderate repeat count
+    if hist_freq in (1, 2) and frp < 8.0:
         return "Agricultural Burning"
 
-    # -- Rule 4: Fallback ----------------------------------------------------
+    # -- Rule 4: Fallback (Anomaly / Unclassified) ---------------------------
+    # Isolated, weak or ambiguous thermal anomalies
     return "Anomaly/Unclassified"
 
 
