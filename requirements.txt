@@ -1,0 +1,24 @@
+# Core data
+requests==2.32.4
+pandas==3.0.3
+numpy>=1.26.0
+
+# Geospatial
+geopandas==1.1.4
+shapely==2.1.2
+osmnx==2.1.1
+
+# Machine learning
+scikit-learn==1.9.0
+xgboost==3.4.1
+shap==0.52.0
+
+# Dashboard
+streamlit==1.58.0
+folium==0.20.0
+streamlit-folium==0.27.4
+plotly==7.0.0
+
+# Utilities
+python-dotenv==1.2.3
+matplotlib>=3.7.0

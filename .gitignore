@@ -1,0 +1,35 @@
+# Git ignore for SIH fire detection project
+
+# Environment / secrets
+.env
+.streamlit/secrets.toml
+
+# Generated data (too large for git — re-run pipeline to generate)
+data/firms_raw.csv
+data/hotspots_with_landuse.csv
+data/features_labeled.csv
+data/osm_cache/
+
+# Generated model artefacts
+models/fire_classifier.pkl
+models/confusion_matrix.png
+models/shap_summary.png
+models/model_report.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
