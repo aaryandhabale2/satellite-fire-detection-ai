@@ -4,17 +4,17 @@
 .env
 .streamlit/secrets.toml
 
-# Generated data (too large for git — re-run pipeline to generate)
+# Generated data (raw dumps ignored, features table tracked for demo/cloud deployment)
 data/firms_raw.csv
 data/hotspots_with_landuse.csv
-data/features_labeled.csv
 data/osm_cache/
+!data/features_labeled.csv
 
-# Generated model artefacts
-models/fire_classifier.pkl
-models/confusion_matrix.png
-models/shap_summary.png
-models/model_report.txt
+# Trained model artifacts (tracked for Streamlit Cloud)
+!models/fire_classifier.pkl
+!models/confusion_matrix.png
+!models/shap_summary.png
+!models/model_report.txt
 
 # Python
 __pycache__/

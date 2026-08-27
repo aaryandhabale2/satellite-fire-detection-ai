@@ -217,28 +217,22 @@ def assign_category(row: pd.Series) -> str:
     is_repeated     = hist_freq >= REPEAT_THRESH
     is_high_frp     = frp >= HIGH_FRP_THRESH
 
-    # ── Rule 1: Industrial (Normal) ─────────────────────────────────────────
-    # Expected, persistent heat from a known industrial facility.
-    if is_industrial and is_high_freq:
+    # -- Rule 1: Industrial (Normal) -----------------------------------------
+    # Persistent thermal source (e.g. gas flare, kiln, plant) detected 3+ times
+    if is_high_freq or (is_industrial and is_repeated):
         return "Industrial (Normal)"
 
-    # ── Rule 2: Wildfire Risk ───────────────────────────────────────────────
-    # Sudden, intense, one-off fire on non-industrial land.
-    if is_high_frp and not is_high_freq:
-        if is_vegetation or lu == "unknown":
-            return "Wildfire Risk"
+    # -- Rule 2: Wildfire Risk -----------------------------------------------
+    # Elevated FRP intensity with low historical frequency
+    if frp >= 15.0 and not is_high_freq:
+        return "Wildfire Risk"
 
-    # ── Rule 3: Agricultural Burning ────────────────────────────────────────
-    # Seasonal post-harvest stubble burning in India (Oct-Nov).
-    if is_farmland and is_agri_month and is_repeated:
+    # -- Rule 3: Agricultural Burning ----------------------------------------
+    # Repeated / clustered field burning
+    if is_repeated and not is_high_freq:
         return "Agricultural Burning"
 
-    # ── Rule 4: Catch moderate industrial without confirmed high frequency ───
-    # (E.g., new or intermittent industrial source — still label industrial)
-    if is_industrial and is_repeated:
-        return "Industrial (Normal)"
-
-    # ── Rule 5: Fallback ────────────────────────────────────────────────────
+    # -- Rule 4: Fallback ----------------------------------------------------
     return "Anomaly/Unclassified"
 
 
