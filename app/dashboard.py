@@ -206,7 +206,7 @@ def make_folium_map(df: pd.DataFrame, cat_col: str) -> folium.Map:
     m = folium.Map(
         location=[22.5, 82.0],
         zoom_start=5,
-        tiles="CartoDB positron",
+        tiles="OpenStreetMap",
     )
 
     # Sample if dataset is large
