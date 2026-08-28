@@ -30,6 +30,10 @@ build/
 # Streamlit
 .streamlit/secrets.toml
 
+# Logs
+*.log
+data/*.log
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,2 +1,12 @@
-[app]
-entry_point = "app/dashboard.py"
+[server]
+port = 8501
+headless = true
+enableCORS = false
+
+[theme]
+base = "light"
+backgroundColor          = "#FAFBFF"
+secondaryBackgroundColor = "#F0E8FF"
+primaryColor             = "#7C3AED"
+textColor                = "#1A0B2E"
+font                     = "sans serif"

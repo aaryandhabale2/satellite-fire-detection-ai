@@ -31,6 +31,13 @@ import sys
 import warnings
 from pathlib import Path
 
+# Alert system — imported lazily so a missing .env never breaks training
+try:
+    from send_alerts import send_alerts as _send_alerts
+    _ALERTS_AVAILABLE = True
+except ImportError:
+    _ALERTS_AVAILABLE = False
+
 # Force UTF-8 output on Windows terminals
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -432,6 +439,21 @@ def main():
     print("       Review confusion_matrix.png and shap_summary.png in models/")
     print("       Proceed to Step 5:  streamlit run app/dashboard.py")
     print()
+
+    # ── 9. Email alerts ────────────────────────────────────────────────────
+    if _ALERTS_AVAILABLE:
+        print("\n" + "=" * 62)
+        print("  STEP 4b — WILDFIRE RISK EMAIL ALERTS")
+        print("=" * 62)
+        # Pass the full dataset; send_alerts() handles filtering internally
+        try:
+            import pandas as _pd
+            df_full = _pd.read_csv(DATA_FILE)
+            _send_alerts(df=df_full)
+        except Exception as _exc:
+            print(f"  [Alerts] Could not run alert check: {_exc}")
+        print("=" * 62)
+        print()
 
 
 # ---------------------------------------------------------------------------
