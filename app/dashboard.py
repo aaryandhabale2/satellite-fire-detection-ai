@@ -114,28 +114,133 @@ pct_mod = round((n_agri / total_hotspots) * 100) if total_hotspots else 32
 pct_high = round((n_anom / total_hotspots) * 100) if total_hotspots else 28
 pct_vhigh = round((n_wild / total_hotspots) * 100) if total_hotspots else 22
 
-# Hotspot points for 3D Globe
-hotspot_points = []
-if not df_raw.empty and "latitude" in df_raw.columns and "longitude" in df_raw.columns:
-    sample_df = df_raw.dropna(subset=["latitude", "longitude"])
-    if len(sample_df) > 1200:
-        sample_df = sample_df.sample(1200, random_state=42)
-    for _, r in sample_df.iterrows():
-        c = str(r.get(cat_col, "Anomaly/Unclassified"))
-        col_hex = "#E5383B" if c == "Wildfire Risk" else ("#F4A259" if c == "Agricultural Burning" else ("#4A8FE7" if c == "Industrial (Normal)" else "#9D4EDD"))
-        hotspot_points.append({
-            "lat": float(r["latitude"]),
-            "lon": float(r["longitude"]),
-            "frp": float(r.get("frp", 15.0)),
-            "cat": c,
-            "color": col_hex,
-            "date": str(r.get("acq_date", ""))[:10],
-            "land": str(r.get("land_use_type", "forest/agriculture"))
-        })
+# ---------------------------------------------------------------------------
+# Dynamic Alerts, Regions & Trend Calculation from Real Data
+# ---------------------------------------------------------------------------
+# 1. Dynamic Recent Alerts from actual top hotspots
+alerts_items = []
+if not df_raw.empty:
+    # Prioritize Wildfire Risk with highest FRP, then others
+    wildfires = df_raw[df_raw[cat_col] == "Wildfire Risk"].sort_values("frp", ascending=False)
+    others = df_raw[df_raw[cat_col] != "Wildfire Risk"].sort_values("frp", ascending=False)
+    top_alerts_df = pd.concat([wildfires.head(2), others.head(2)]).head(3)
 
-hotspots_json = json.dumps(hotspot_points)
-now_date_str = datetime.now().strftime("%b %d, %Y")
-now_time_str = datetime.now().strftime("%I:%M %p IST")
+    for _, row in top_alerts_df.iterrows():
+        cat = str(row.get(cat_col, "Wildfire Risk"))
+        lat = float(row.get("latitude", 0.0))
+        lon = float(row.get("longitude", 0.0))
+        frp = float(row.get("frp", 0.0))
+        date_val = str(row.get("acq_date", ""))[:10]
+        time_val = str(row.get("acq_time", "0000")).zfill(4)
+        formatted_time = f"{time_val[:2]}:{time_val[2:]} UTC"
+        conf = str(row.get("confidence", "nominal")).upper()
+
+        if cat == "Wildfire Risk":
+            icon_box = '<div class="alert-icon-box box-high">🔥</div>'
+            badge = '<div class="risk-badge risk-high">High Risk</div>'
+            heading = f"High Wildfire Risk detected ({frp:.1f} MW)"
+        elif cat == "Agricultural Burning":
+            icon_box = '<div class="alert-icon-box box-mod">🍃</div>'
+            badge = '<div class="risk-badge risk-mod">Moderate Risk</div>'
+            heading = f"Agricultural Stubble Burning ({frp:.1f} MW)"
+        elif cat == "Industrial (Normal)":
+            icon_box = '<div class="alert-icon-box box-low">🏭</div>'
+            badge = '<div class="risk-badge risk-low">Low Risk</div>'
+            heading = f"Industrial Thermal Emitter ({frp:.1f} MW)"
+        else:
+            icon_box = '<div class="alert-icon-box box-mod">⚠️</div>'
+            badge = '<div class="risk-badge risk-mod">Anomaly</div>'
+            heading = f"Thermal Anomaly detected ({frp:.1f} MW)"
+
+        maps_url = f"https://maps.google.com/?q={lat:.5f},{lon:.5f}"
+        meta = f"{date_val} {formatted_time} &middot; Coord: {lat:.3f}&deg;N, {lon:.3f}&deg;E &middot; Conf: {conf}"
+
+        alerts_items.append(f"""
+        <div class="alert-item">
+          {icon_box}
+          <div class="alert-text-wrap">
+            <div class="alert-heading">{heading}</div>
+            <div class="alert-meta">{meta}</div>
+          </div>
+          {badge}
+          <a class="view-btn" href="{maps_url}" target="_blank">View Map &rsaquo;</a>
+        </div>
+        """)
+
+recent_alerts_html = "".join(alerts_items) if alerts_items else "<div style='padding:15px;color:#888;'>No critical alerts at this time.</div>"
+
+# 2. Dynamic Top Regions by Latitude/Longitude Clusters
+regions_items = []
+if not df_raw.empty and "latitude" in df_raw.columns:
+    def approximate_zone(row):
+        lat = row["latitude"]
+        lon = row["longitude"]
+        if lat < 14.0:
+            return "Southern Zone (TN/KL/KA)"
+        elif lat < 20.0 and lon < 78.0:
+            return "Maharashtra / Western Ghats"
+        elif lat < 20.0 and lon >= 78.0:
+            return "Eastern Deccan (AP/Telangana)"
+        elif lat < 25.0 and lon < 75.0:
+            return "Gujarat / West Coast"
+        elif lat < 25.0 and lon >= 75.0:
+            return "Central India (MP/CG/OD)"
+        elif lat >= 25.0 and lon < 78.0:
+            return "Northwest (PB/HR/RJ)"
+        else:
+            return "Gangetic Plain (UP/BR/WB)"
+
+    zone_series = df_raw.apply(approximate_zone, axis=1).value_counts().head(5)
+    max_count = zone_series.max() if not zone_series.empty else 1
+    for rank, (zone_name, count) in enumerate(zone_series.items(), start=1):
+        prog_pct = max(15, round((count / max_count) * 100))
+        regions_items.append(f"""
+        <div class="region-item">
+          <div class="region-rank">{rank}</div>
+          <div class="region-label">{zone_name}</div>
+          <div class="region-bar-bg"><div class="region-bar-prog" style="width:{prog_pct}%;"></div></div>
+          <div class="region-num">{count}</div>
+        </div>
+        """)
+
+top_regions_html = "".join(regions_items)
+
+# 3. Dynamic 7-day Trend SVG
+trend_labels = []
+trend_counts = []
+if not df_raw.empty and "acq_date" in df_raw.columns:
+    daily_counts = df_raw.groupby(df_raw["acq_date"].dt.strftime("%b %d")).size()
+    trend_labels = list(daily_counts.index)[-7:]
+    trend_counts = list(daily_counts.values)[-7:]
+
+while len(trend_labels) < 7:
+    trend_labels.insert(0, f"Day {len(trend_labels)+1}")
+    trend_counts.insert(0, 0)
+
+max_t = max(trend_counts) if trend_counts and max(trend_counts) > 0 else 100
+min_t = min(trend_counts) if trend_counts else 0
+
+x_coords = [25, 65, 110, 155, 200, 245, 295]
+pts = []
+dots_svg = []
+labels_svg = []
+for i in range(7):
+    x = x_coords[i]
+    val = trend_counts[i]
+    # Map val between y=85 (min) and y=25 (max)
+    norm = (val - min_t) / (max_t - min_t) if max_t > min_t else 0.5
+    y = round(85 - norm * 60)
+    pts.append(f"{x},{y}")
+    dots_svg.append(f'<circle cx="{x}" cy="{y}" r="3.5" fill="#7B2CBF"/>')
+    labels_svg.append(f'<text x="{x}" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">{trend_labels[i]}</text>')
+
+polyline_pts = " ".join(pts)
+trend_svg_code = f"""
+<polyline points="{polyline_pts}" fill="none" stroke="#7B2CBF" stroke-width="2.5"/>
+{''.join(dots_svg)}
+<text x="295" y="15" text-anchor="middle" font-size="10" font-weight="800" fill="#7B2CBF">{trend_counts[-1]}</text>
+{''.join(labels_svg)}
+"""
 
 # ---------------------------------------------------------------------------
 # Global CSS to create seamless canvas app
@@ -1135,28 +1240,9 @@ full_dashboard_html = f"""
             <line x1="20" y1="50" x2="310" y2="50" stroke="#F0E6FB" stroke-dasharray="3,3"/>
             <line x1="20" y1="80" x2="310" y2="80" stroke="#F0E6FB" stroke-dasharray="3,3"/>
             
-            <!-- Area & Line -->
-            <polygon points="25,75 65,65 110,55 155,68 200,45 245,55 295,25 295,100 25,100" fill="url(#purpleGradient)"/>
-            <polyline points="25,75 65,65 110,55 155,68 200,45 245,55 295,25" fill="none" stroke="#7B2CBF" stroke-width="2.5"/>
-            
-            <!-- Dots -->
-            <circle cx="25" cy="75" r="3.5" fill="#7B2CBF"/>
-            <circle cx="65" cy="65" r="3.5" fill="#7B2CBF"/>
-            <circle cx="110" cy="55" r="3.5" fill="#7B2CBF"/>
-            <circle cx="155" cy="68" r="3.5" fill="#7B2CBF"/>
-            <circle cx="200" cy="45" r="3.5" fill="#7B2CBF"/>
-            <circle cx="245" cy="55" r="3.5" fill="#7B2CBF"/>
-            <circle cx="295" cy="25" r="4.5" fill="#7B2CBF" stroke="#FFFFFF" stroke-width="2"/>
-            
-            <!-- Values -->
-            <text x="295" y="15" text-anchor="middle" font-size="10" font-weight="800" fill="#7B2CBF">1,248</text>
-            <text x="25" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">May 21</text>
-            <text x="65" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">May 22</text>
-            <text x="110" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">May 23</text>
-            <text x="155" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">May 24</text>
-            <text x="200" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">May 25</text>
-            <text x="245" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">May 26</text>
-            <text x="295" y="115" text-anchor="middle" font-size="8.5" fill="#9A93B5">May 27</text>
+            <!-- Area & Line + Points -->
+            <polygon points="{polyline_pts} 295,100 25,100" fill="url(#purpleGradient)"/>
+            {trend_svg_code}
           </svg>
         </div>
       </div>
@@ -1170,17 +1256,17 @@ full_dashboard_html = f"""
           <div class="donut-graphic">
             <svg viewBox="0 0 36 36" width="115" height="115">
               <circle cx="18" cy="18" r="15" fill="none" stroke="#F0E6FB" stroke-width="4.5"></circle>
-              <!-- Low: Green 18% -->
+              <!-- Low: Green -->
               <circle cx="18" cy="18" r="15" fill="none" stroke="#5CAE6E" stroke-width="4.5" stroke-dasharray="{pct_low} {100-pct_low}" stroke-dashoffset="25" transform="rotate(-90 18 18)"></circle>
-              <!-- Moderate: Yellow 32% -->
+              <!-- Moderate: Yellow -->
               <circle cx="18" cy="18" r="15" fill="none" stroke="#FFD166" stroke-width="4.5" stroke-dasharray="{pct_mod} {100-pct_mod}" stroke-dashoffset="{25 - pct_low}" transform="rotate(-90 18 18)"></circle>
-              <!-- High: Orange 28% -->
+              <!-- High: Orange -->
               <circle cx="18" cy="18" r="15" fill="none" stroke="#F4A259" stroke-width="4.5" stroke-dasharray="{pct_high} {100-pct_high}" stroke-dashoffset="{25 - pct_low - pct_mod}" transform="rotate(-90 18 18)"></circle>
-              <!-- Very High: Red 22% -->
+              <!-- Very High: Red -->
               <circle cx="18" cy="18" r="15" fill="none" stroke="#E5383B" stroke-width="4.5" stroke-dasharray="{pct_vhigh} {100-pct_vhigh}" stroke-dashoffset="{25 - pct_low - pct_mod - pct_high}" transform="rotate(-90 18 18)"></circle>
             </svg>
             <div class="donut-center-info">
-              <div class="donut-big-num">1,248</div>
+              <div class="donut-big-num">{total_hotspots:,}</div>
               <div class="donut-sub-text">Total</div>
             </div>
           </div>
@@ -1203,39 +1289,7 @@ full_dashboard_html = f"""
         <div class="card-title">Recent Alerts</div>
         <div class="view-all">View All</div>
       </div>
-
-      <!-- Alert 1 -->
-      <div class="alert-item">
-        <div class="alert-icon-box box-high">⚠️</div>
-        <div class="alert-text-wrap">
-          <div class="alert-heading">High wildfire risk detected in Satara District</div>
-          <div class="alert-meta">May 27, 2025, 10:30 AM &middot; Confidence: 92%</div>
-        </div>
-        <div class="risk-badge risk-high">High Risk</div>
-        <a class="view-btn" href="https://maps.google.com/?q=17.6805,73.9972" target="_blank">View Details &rsaquo;</a>
-      </div>
-
-      <!-- Alert 2 -->
-      <div class="alert-item">
-        <div class="alert-icon-box box-mod">🍃</div>
-        <div class="alert-text-wrap">
-          <div class="alert-heading">Agricultural burning detected in Punjab</div>
-          <div class="alert-meta">May 27, 2025, 09:15 AM &middot; Confidence: 87%</div>
-        </div>
-        <div class="risk-badge risk-mod">Moderate Risk</div>
-        <a class="view-btn" href="https://maps.google.com/?q=30.9010,75.8573" target="_blank">View Details &rsaquo;</a>
-      </div>
-
-      <!-- Alert 3 -->
-      <div class="alert-item">
-        <div class="alert-icon-box box-low">🏭</div>
-        <div class="alert-text-wrap">
-          <div class="alert-heading">Industrial anomaly detected in Gujarat</div>
-          <div class="alert-meta">May 27, 2025, 08:45 AM &middot; Confidence: 78%</div>
-        </div>
-        <div class="risk-badge risk-low">Low Risk</div>
-        <a class="view-btn" href="https://maps.google.com/?q=21.1702,72.8311" target="_blank">View Details &rsaquo;</a>
-      </div>
+      {recent_alerts_html}
     </div>
 
     <!-- Top Affected Regions Card -->
@@ -1244,41 +1298,7 @@ full_dashboard_html = f"""
         <div class="card-title">Top Affected Regions</div>
         <div class="view-all">View All</div>
       </div>
-
-      <div class="region-item">
-        <div class="region-rank">1</div>
-        <div class="region-label">Gadchiroli, Maharashtra</div>
-        <div class="region-bar-bg"><div class="region-bar-prog" style="width:92%;"></div></div>
-        <div class="region-num">342</div>
-      </div>
-
-      <div class="region-item">
-        <div class="region-rank">2</div>
-        <div class="region-label">Chandrapur, Maharashtra</div>
-        <div class="region-bar-bg"><div class="region-bar-prog" style="width:78%;"></div></div>
-        <div class="region-num">287</div>
-      </div>
-
-      <div class="region-item">
-        <div class="region-rank">3</div>
-        <div class="region-label">Bhandara, Maharashtra</div>
-        <div class="region-bar-bg"><div class="region-bar-prog" style="width:54%;"></div></div>
-        <div class="region-num">198</div>
-      </div>
-
-      <div class="region-item">
-        <div class="region-rank">4</div>
-        <div class="region-label">Nanded, Maharashtra</div>
-        <div class="region-bar-bg"><div class="region-bar-prog" style="width:44%;"></div></div>
-        <div class="region-num">164</div>
-      </div>
-
-      <div class="region-item">
-        <div class="region-rank">5</div>
-        <div class="region-label">Yavatmal, Maharashtra</div>
-        <div class="region-bar-bg"><div class="region-bar-prog" style="width:38%;"></div></div>
-        <div class="region-num">143</div>
-      </div>
+      {top_regions_html}
     </div>
   </div>
 </div>
