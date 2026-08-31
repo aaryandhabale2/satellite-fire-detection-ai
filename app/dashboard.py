@@ -1565,9 +1565,9 @@ full_dashboard_html = f"""
   function initLeafletMap() {{
     if (!leafletMap) {{
       leafletMap = L.map('leaflet-2d-container').setView([22.5, 82.0], 5);
-      L.tileLayer('https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png', {{
-        maxZoom: 18,
-        attribution: '&copy; OpenStreetMap contributors'
+      L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       }}).addTo(leafletMap);
 
       hotspotData.forEach(pt => {{

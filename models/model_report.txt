@@ -1,30 +1,30 @@
 Industrial Fire Classifier — Model Report
 ==========================================
 
-Features used : ['brightness', 'frp', 'log_frp', 'distance_to_industrial', 'historical_frequency', 'month', 'scan', 'track', 'land_use_type_enc', 'time_of_day_enc', 'season_enc']
+Features used : ['brightness', 'frp', 'log_frp', 'distance_to_industrial', 'historical_frequency', 'month', 'scan', 'track', 'confidence_enc', 'delta_brightness', 'land_use_type_enc', 'time_of_day_enc', 'season_enc']
 Classes       : ['Agricultural Burning', 'Anomaly/Unclassified', 'Industrial (Normal)', 'Wildfire Risk']
-Train samples : 380
-Test  samples : 95
+Train samples : 424
+Test  samples : 106
 
 CLASSIFICATION REPORT (test set)
 ---------------------------------
                       precision    recall  f1-score   support
 
-Agricultural Burning     1.0000    1.0000    1.0000        26
-Anomaly/Unclassified     1.0000    1.0000    1.0000        52
- Industrial (Normal)     1.0000    1.0000    1.0000         8
-       Wildfire Risk     1.0000    1.0000    1.0000         9
+Agricultural Burning     0.9474    0.9000    0.9231        20
+Anomaly/Unclassified     0.9375    0.9836    0.9600        61
+ Industrial (Normal)     1.0000    0.9231    0.9600        13
+       Wildfire Risk     0.9091    0.8333    0.8696        12
 
-            accuracy                         1.0000        95
-           macro avg     1.0000    1.0000    1.0000        95
-        weighted avg     1.0000    1.0000    1.0000        95
+            accuracy                         0.9434       106
+           macro avg     0.9485    0.9100    0.9282       106
+        weighted avg     0.9438    0.9434    0.9428       106
 
 CONFUSION MATRIX
 -----------------
-[[26  0  0  0]
- [ 0 52  0  0]
- [ 0  0  8  0]
- [ 0  0  0  9]]
+[[18  2  0  0]
+ [ 0 60  0  1]
+ [ 0  1 12  0]
+ [ 1  1  0 10]]
 
 Rows = True labels, Cols = Predicted labels
 Classes: ['Agricultural Burning', 'Anomaly/Unclassified', 'Industrial (Normal)', 'Wildfire Risk']

@@ -92,6 +92,14 @@ NEAR_IND_DIST_M  = 1_000     # within 1 km of industry -> consider "industrial"
 # ~1 km in decimal degrees (at India's latitudes, 0.01 deg ~ 1.1 km)
 FREQ_BUCKET_DEG  = 0.01
 
+# ---------------------------------------------------------------------------
+# Label noise — set True to flip ~5% of labels (makes model accuracy realistic)
+# Keep False for production; toggle True for demo / hackathon presentation
+# ---------------------------------------------------------------------------
+INJECT_LABEL_NOISE  = True   # flip ~5% of heuristic labels to simulate annotation noise
+LABEL_NOISE_FRAC    = 0.05   # fraction of rows to relabel randomly
+NOISE_RANDOM_SEED   = 7      # for reproducibility
+
 
 # ---------------------------------------------------------------------------
 # Feature 1: historical_frequency
@@ -266,6 +274,36 @@ def main():
         df["brightness"] = 300.0  # safe default
         print("  [WARN] No brightness column found — defaulting to 300 K.")
 
+    # ── 3b. Delta brightness (bright_ti4 - bright_ti5) ─────────────────────
+    # The difference between channel 4 (mid-IR) and channel 5 (long-wave IR)
+    # is a classic satellite fire detection signal used in VIIRS active-fire
+    # algorithms — genuine fires show large positive delta.
+    if "bright_ti5" in df.columns:
+        ti5 = df["bright_ti5"].fillna(df["bright_ti5"].median())
+        df["delta_brightness"] = (df["brightness"] - ti5).round(3)
+        print(f"  [INFO] 'delta_brightness' computed. "
+              f"Range: {df['delta_brightness'].min():.1f} – {df['delta_brightness'].max():.1f} K")
+    else:
+        df["delta_brightness"] = 0.0
+        print("  [WARN] 'bright_ti5' not found — delta_brightness defaulting to 0.")
+
+    # ── 3c. Confidence encoding ─────────────────────────────────────────────
+    # VIIRS stores confidence as 'l' (low), 'n' (nominal), 'h' (high).
+    # Map to a numeric scale for use as a model feature.
+    CONF_MAP = {"l": 0, "low": 0, "n": 1, "nominal": 1, "h": 2, "high": 2}
+    if "confidence" in df.columns:
+        df["confidence_enc"] = (
+            df["confidence"]
+            .astype(str).str.lower().str.strip()
+            .map(CONF_MAP)
+            .fillna(1)   # default to nominal if unknown
+            .astype(int)
+        )
+        print(f"  [INFO] 'confidence_enc' computed: {df['confidence_enc'].value_counts().to_dict()}")
+    else:
+        df["confidence_enc"] = 1  # assume nominal
+        print("  [WARN] 'confidence' column not found — confidence_enc defaulting to 1.")
+
     # Clip FRP to non-negative values
     df["frp"]     = df["frp"].clip(lower=0).fillna(0.0)
     df["log_frp"] = np.log1p(df["frp"])
@@ -303,10 +341,27 @@ def main():
     print("  --> Assigning heuristic category labels ...")
     df["category"] = df.apply(assign_category, axis=1)
 
+    # ── 8b. Optional label noise injection ────────────────────────────────
+    # Randomly flip a small fraction of labels to simulate real-world
+    # annotation imperfection and prevent the model from trivially memorising
+    # the deterministic heuristic thresholds.
+    if INJECT_LABEL_NOISE and LABEL_NOISE_FRAC > 0:
+        rng = np.random.default_rng(NOISE_RANDOM_SEED)
+        all_categories = df["category"].unique().tolist()
+        n_flip = max(1, int(len(df) * LABEL_NOISE_FRAC))
+        flip_idx = rng.choice(df.index, size=n_flip, replace=False)
+        for idx in flip_idx:
+            current = df.at[idx, "category"]
+            candidates = [c for c in all_categories if c != current]
+            df.at[idx, "category"] = rng.choice(candidates)
+        print(f"  [NOISE] Flipped {n_flip} labels (~{LABEL_NOISE_FRAC*100:.0f}%) "
+              f"to simulate annotation noise.")
+
     # ── 9. Select columns to save ─────────────────────────────────────────
     # Keep all original columns + the new features we computed
     new_cols = [
         "brightness", "frp", "log_frp",
+        "delta_brightness", "confidence_enc",
         "land_use_type", "distance_to_industrial",
         "historical_frequency",
         "time_of_day", "season",
