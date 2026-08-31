@@ -242,6 +242,29 @@ trend_svg_code = f"""
 {''.join(labels_svg)}
 """
 
+# 4. Hotspot points for 3D Globe & Leaflet 2D Map
+hotspot_points = []
+if not df_raw.empty and "latitude" in df_raw.columns and "longitude" in df_raw.columns:
+    sample_df = df_raw.dropna(subset=["latitude", "longitude"])
+    if len(sample_df) > 1200:
+        sample_df = sample_df.sample(1200, random_state=42)
+    for _, r in sample_df.iterrows():
+        c = str(r.get(cat_col, "Anomaly/Unclassified"))
+        col_hex = "#E5383B" if c == "Wildfire Risk" else ("#F4A259" if c == "Agricultural Burning" else ("#4A8FE7" if c == "Industrial (Normal)" else "#9D4EDD"))
+        hotspot_points.append({
+            "lat": float(r["latitude"]),
+            "lon": float(r["longitude"]),
+            "frp": float(r.get("frp", 15.0)),
+            "cat": c,
+            "color": col_hex,
+            "date": str(r.get("acq_date", ""))[:10],
+            "land": str(r.get("land_use_type", "forest/agriculture"))
+        })
+
+hotspots_json = json.dumps(hotspot_points)
+now_date_str = datetime.now().strftime("%b %d, %Y")
+now_time_str = datetime.now().strftime("%I:%M %p IST")
+
 # ---------------------------------------------------------------------------
 # Global CSS to create seamless canvas app
 # ---------------------------------------------------------------------------
