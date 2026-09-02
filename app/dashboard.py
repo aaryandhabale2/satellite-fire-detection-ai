@@ -2208,18 +2208,20 @@ full_dashboard_html = f"""
 
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
-  controls.minDistance = 8.5;
-  controls.maxDistance = 40;
+  controls.dampingFactor = 0.06;
+  controls.minDistance = 7.32; // DEEP CLOSE-UP ZOOM right down to surface!
+  controls.maxDistance = 38;
+  controls.zoomSpeed = 1.3;
   controls.autoRotate = true;
-  controls.autoRotateSpeed = 0.65;
+  controls.autoRotateSpeed = 0.5;
 
-  const starCount = 1200;
+  // Starfield
+  const starCount = 1400;
   const starCoords = new Float32Array(starCount * 3);
   for(let i = 0; i < starCount * 3; i += 3) {{
-    starCoords[i] = (Math.random() - 0.5) * 220;
-    starCoords[i+1] = (Math.random() - 0.5) * 220;
-    starCoords[i+2] = (Math.random() - 0.5) * 220;
+    starCoords[i] = (Math.random() - 0.5) * 240;
+    starCoords[i+1] = (Math.random() - 0.5) * 240;
+    starCoords[i+2] = (Math.random() - 0.5) * 240;
   }}
   const starGeo = new THREE.BufferGeometry();
   starGeo.setAttribute('position', new THREE.BufferAttribute(starCoords, 3));
@@ -2230,41 +2232,72 @@ full_dashboard_html = f"""
   scene.add(earthGroup);
 
   const globeRadius = 7.2;
-  const globeGeo = new THREE.SphereGeometry(globeRadius, 64, 64);
+  const globeGeo = new THREE.SphereGeometry(globeRadius, 96, 96);
 
+  // High-Res NASA Blue Marble & Night Textures
   const texLoader = new THREE.TextureLoader();
   texLoader.setCrossOrigin('anonymous');
-  const earthNightURL = 'https://unpkg.com/three-globe/example/img/earth-night.jpg';
+  const earthBlueMarbleURL = 'https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg';
   const earthCloudsURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png';
+  const earthTopoURL = 'https://unpkg.com/three-globe/example/img/earth-topology.png';
 
   const globeMat = new THREE.MeshStandardMaterial({{
-    color: 0x111c38,
-    roughness: 0.8,
-    metalness: 0.1
+    color: 0x1a2e4a,
+    roughness: 0.7,
+    metalness: 0.15
   }});
 
+  // Load NASA photorealistic texture
   texLoader.load(
-    earthNightURL,
-    (tex) => {{ globeMat.map = tex; globeMat.color.setHex(0xffffff); globeMat.needsUpdate = true; }},
+    earthBlueMarbleURL,
+    (tex) => {{
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      globeMat.map = tex;
+      globeMat.color.setHex(0xffffff);
+      globeMat.needsUpdate = true;
+    }},
     undefined,
-    () => {{ globeMat.color.setHex(0x0f2142); }}
+    () => {{
+      // Fallback detailed relief canvas
+      const cvs = document.createElement('canvas');
+      cvs.width = 2048; cvs.height = 1024;
+      const ctx = cvs.getContext('2d');
+      ctx.fillStyle = '#061328'; ctx.fillRect(0, 0, 2048, 1024);
+      ctx.fillStyle = '#1b382b'; ctx.beginPath(); ctx.arc(1450, 420, 190, 0, Math.PI*2); ctx.fill();
+      const fallbackTex = new THREE.CanvasTexture(cvs);
+      globeMat.map = fallbackTex;
+      globeMat.needsUpdate = true;
+    }}
   );
 
   const globeMesh = new THREE.Mesh(globeGeo, globeMat);
   earthGroup.add(globeMesh);
 
-  const cloudsMat = new THREE.MeshStandardMaterial({{ transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending }});
+  // Atmospheric Glow Halo
+  const haloGeo = new THREE.SphereGeometry(globeRadius + 0.12, 64, 64);
+  const haloMat = new THREE.MeshBasicMaterial({{
+    color: 0x60a5fa,
+    transparent: true,
+    opacity: 0.15,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending
+  }});
+  earthGroup.add(new THREE.Mesh(haloGeo, haloMat));
+
+  // Clouds Layer
+  const cloudsMat = new THREE.MeshStandardMaterial({{ transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending }});
   texLoader.load(earthCloudsURL, (tex) => {{ cloudsMat.map = tex; cloudsMat.needsUpdate = true; }});
-  const cloudsMesh = new THREE.Mesh(new THREE.SphereGeometry(globeRadius + 0.08, 64, 64), cloudsMat);
+  const cloudsMesh = new THREE.Mesh(new THREE.SphereGeometry(globeRadius + 0.07, 64, 64), cloudsMat);
   earthGroup.add(cloudsMesh);
 
   // Lighting
-  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-  const dirLight = new THREE.DirectionalLight(0xd9c5ff, 1.4);
-  dirLight.position.set(12, 18, 15);
-  scene.add(dirLight);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1.3);
+  sunLight.position.set(15, 20, 18);
+  scene.add(sunLight);
 
-  // Convert GPS to Vector3
+  // Convert GPS to 3D Cartesian coordinates on globe surface
   function latLonToVector3(lat, lon, radius) {{
     const phi = (90 - lat) * (Math.PI / 180);
     const theta = (lon + 180) * (Math.PI / 180);
@@ -2275,28 +2308,88 @@ full_dashboard_html = f"""
     );
   }}
 
+  // ── Indian Reference Regional Landmarks ─────────────────────────────────
+  const landmarkNodes = [
+    {{ name: "New Delhi (NCR)", lat: 28.6139, lon: 77.2090, type: "National Capital" }},
+    {{ name: "Mumbai (Western Coast)", lat: 19.0760, lon: 72.8777, type: "Metropolis" }},
+    {{ name: "Kolkata (Eastern)", lat: 22.5726, lon: 88.3639, type: "Metropolis" }},
+    {{ name: "Bengaluru (Southern)", lat: 12.9716, lon: 77.5946, type: "Metropolis" }},
+    {{ name: "Punjab Farmlands", lat: 30.9010, lon: 75.8573, type: "Agri Stubble Belt" }},
+    {{ name: "Simlipal Biosphere", lat: 21.8500, lon: 86.3500, type: "Forest Wildfire Zone" }},
+    {{ name: "Jamnagar Petrochem", lat: 22.4707, lon: 70.0577, type: "Industrial Complex" }}
+  ];
+
+  const landmarkGroup = new THREE.Group();
+  earthGroup.add(landmarkGroup);
+
+  landmarkNodes.forEach(lm => {{
+    const pos = latLonToVector3(lm.lat, lm.lon, globeRadius + 0.05);
+    // Landmark ring
+    const ringGeo = new THREE.RingGeometry(0.08, 0.14, 16);
+    const ringMat = new THREE.MeshBasicMaterial({{ color: 0x93C5FD, side: THREE.DoubleSide }});
+    const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+    ringMesh.position.copy(pos);
+    ringMesh.lookAt(new THREE.Vector3(0, 0, 0));
+    landmarkGroup.add(ringMesh);
+
+    // Landmark pin
+    const pinGeo = new THREE.SphereGeometry(0.07, 10, 10);
+    const pinMat = new THREE.MeshBasicMaterial({{ color: 0x60A5FA }});
+    const pinMesh = new THREE.Mesh(pinGeo, pinMat);
+    pinMesh.position.copy(pos);
+    pinMesh.userData = {{ isLandmark: true, name: lm.name, type: lm.type, lat: lm.lat, lon: lm.lon }};
+    landmarkGroup.add(pinMesh);
+  }});
+
+  // ── Hotspot Thermal Pillars & Pulsing Markers ────────────────────────────
   const pointMeshes = [];
+  const pillarGroup = new THREE.Group();
+  earthGroup.add(pillarGroup);
+
   hotspotData.forEach(pt => {{
     const pos = latLonToVector3(pt.lat, pt.lon, globeRadius + 0.06);
-    const pGeo = new THREE.SphereGeometry(Math.max(0.06, Math.min(0.18, Math.sqrt(pt.frp) * 0.025)), 12, 12);
+    const rad = Math.max(0.06, Math.min(0.20, Math.sqrt(pt.frp) * 0.026));
+    const pGeo = new THREE.SphereGeometry(rad, 12, 12);
     const pMat = new THREE.MeshBasicMaterial({{ color: pt.color }});
     const pMesh = new THREE.Mesh(pGeo, pMat);
     pMesh.position.copy(pos);
     pMesh.userData = pt;
     earthGroup.add(pMesh);
     pointMeshes.push(pMesh);
+
+    // 3D Vertical Thermal Pillar for intense heat events
+    if (pt.frp >= 6.0 || pt.cat === "Wildfire Risk") {{
+      const pillarHeight = Math.min(1.4, 0.25 + Math.sqrt(pt.frp) * 0.08);
+      const cylGeo = new THREE.CylinderGeometry(0.02, rad * 0.9, pillarHeight, 8);
+      const cylMat = new THREE.MeshBasicMaterial({{
+        color: pt.color,
+        transparent: true,
+        opacity: 0.65,
+        blending: THREE.AdditiveBlending
+      }});
+      const cylMesh = new THREE.Mesh(cylGeo, cylMat);
+
+      // Position & orient along normal from globe center
+      const normal = pos.clone().normalize();
+      cylMesh.position.copy(pos.clone().add(normal.clone().multiplyScalar(pillarHeight / 2)));
+      cylMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+      pillarGroup.add(cylMesh);
+    }}
   }});
 
-  // Center India
+  // Center India view on startup
   earthGroup.rotation.y = -Math.PI / 1.75;
   earthGroup.rotation.x = 0.28;
 
-  // Tooltip Raycasting
+  // ── Smooth Zoom to Hotspot on Click ─────────────────────────────────────
+  let targetCamDistance = camera.position.length();
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
 
-  window.addEventListener('mousemove', (e) => {{
+  window.addEventListener('click', (e) => {{
     const rect = renderer.domElement.getBoundingClientRect();
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+
     mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
@@ -2305,17 +2398,79 @@ full_dashboard_html = f"""
 
     if (intersects.length > 0) {{
       const d = intersects[0].object.userData;
+      controls.autoRotate = false;
+
+      // Smooth zoom into clicked hotspot
+      const targetPos = intersects[0].point.clone().normalize().multiplyScalar(globeRadius + 1.2);
+      camera.position.lerp(targetPos, 0.65);
+      controls.update();
+
+      // Show rich inspection card
       tooltip.style.display = 'block';
       tooltip.style.left = (e.clientX - rect.left + 15) + 'px';
       tooltip.style.top = (e.clientY - rect.top - 10) + 'px';
       tooltip.innerHTML = `
-        <div style="font-weight:800; font-size:12px; color:${{d.color}}">${{d.cat}}</div>
-        <div style="font-size:10.5px; color:#C9BFE8; margin-top:3px; line-height:1.4;">
-          🔥 Radiative Power: <b>${{d.frp.toFixed(1)}} MW</b><br>
-          📍 Coord: (${{d.lat.toFixed(3)}}&deg;, ${{d.lon.toFixed(3)}}&deg;)<br>
-          📅 Date: ${{d.date}} &middot; ${{d.land}}
+        <div style="font-weight:800; font-size:13px; color:${{d.color}}">📍 ${{d.cat}}</div>
+        <div style="font-size:11px; color:#E2D9F3; margin-top:4px; line-height:1.5;">
+          🔥 <b>Fire Radiative Power:</b> ${{d.frp.toFixed(1)}} MW<br>
+          📌 <b>Coordinates:</b> ${{d.lat.toFixed(4)}}&deg;N, ${{d.lon.toFixed(4)}}&deg;E<br>
+          🌱 <b>Land-Use:</b> ${{d.land}}<br>
+          📅 <b>Satellite Pass:</b> ${{d.date}}
+        </div>
+        <div style="margin-top:6px; font-size:10px; color:#9D4EDD; font-weight:700;">
+          Double-click to reset Earth view &bull; Click 2D Map for local roads
         </div>
       `;
+    }}
+  }});
+
+  // Double-click resets camera overview
+  window.addEventListener('dblclick', (e) => {{
+    camera.position.set(0, 3.8, 20.5);
+    controls.target.set(0, 0, 0);
+    controls.autoRotate = true;
+    controls.update();
+    tooltip.style.display = 'none';
+  }});
+
+  // Hover Tooltip
+  window.addEventListener('mousemove', (e) => {{
+    const rect = renderer.domElement.getBoundingClientRect();
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {{
+      tooltip.style.display = 'none';
+      return;
+    }}
+
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects([...pointMeshes, ...landmarkGroup.children]);
+
+    if (intersects.length > 0) {{
+      const d = intersects[0].object.userData;
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX - rect.left + 15) + 'px';
+      tooltip.style.top = (e.clientY - rect.top - 10) + 'px';
+
+      if (d.isLandmark) {{
+        tooltip.innerHTML = `
+          <div style="font-weight:800; font-size:12px; color:#60A5FA;">🏛️ ${{d.name}}</div>
+          <div style="font-size:10.5px; color:#C9BFE8; margin-top:2px;">
+            Region Type: ${{d.type}}<br>
+            Coord: (${{d.lat.toFixed(2)}}&deg;N, ${{d.lon.toFixed(2)}}&deg;E)
+          </div>
+        `;
+      }} else {{
+        tooltip.innerHTML = `
+          <div style="font-weight:800; font-size:12px; color:${{d.color}}">${{d.cat}}</div>
+          <div style="font-size:10.5px; color:#C9BFE8; margin-top:3px; line-height:1.4;">
+            🔥 Radiative Power: <b>${{d.frp.toFixed(1)}} MW</b><br>
+            📍 Coord: (${{d.lat.toFixed(3)}}&deg;, ${{d.lon.toFixed(3)}}&deg;)<br>
+            📅 Date: ${{d.date}} &middot; ${{d.land}}
+          </div>
+        `;
+      }}
     }} else {{
       tooltip.style.display = 'none';
     }}
@@ -2328,17 +2483,18 @@ full_dashboard_html = f"""
   }});
   document.getElementById('btn-zoom-in').addEventListener('click', (e) => {{
     e.stopPropagation();
-    camera.position.multiplyScalar(0.85);
+    camera.position.multiplyScalar(0.82);
     controls.update();
   }});
   document.getElementById('btn-zoom-out').addEventListener('click', (e) => {{
     e.stopPropagation();
-    camera.position.multiplyScalar(1.18);
+    camera.position.multiplyScalar(1.22);
     controls.update();
   }});
   document.getElementById('btn-layers').addEventListener('click', (e) => {{
     e.stopPropagation();
     cloudsMesh.visible = !cloudsMesh.visible;
+    landmarkGroup.visible = !landmarkGroup.visible;
   }});
 
   // 2D Leaflet
@@ -2384,10 +2540,15 @@ full_dashboard_html = f"""
   }});
 
   // Animation Loop
+  const clock = new THREE.Clock();
   function animate() {{
     requestAnimationFrame(animate);
     controls.update();
-    cloudsMesh.rotation.y += 0.0012;
+    const elapsedTime = clock.getElapsedTime();
+    cloudsMesh.rotation.y += 0.0009;
+    pillarGroup.children.forEach((p, idx) => {{
+      p.material.opacity = 0.45 + Math.sin(elapsedTime * 3.5 + idx) * 0.3;
+    }});
     renderer.render(scene, camera);
   }}
   animate();
