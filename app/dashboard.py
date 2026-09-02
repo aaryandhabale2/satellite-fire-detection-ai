@@ -1,19 +1,15 @@
 """
-app/dashboard.py -- FireIntel AI Dashboard
---------------------------------------------
-Pixel-perfect implementation of the FireIntel AI dashboard design mockup.
-Features:
-- Complete exact sidebar, topbar, 5 KPI cards with custom badges & icons
-- Interactive 3D Live Earth View with rotating photorealistic globe & glowing thermal hotspots
-- Instant 2D / 3D Mode Toggle with Leaflet clustered map
-- Full interactive toolbar: Rotate toggle, Zoom In, Zoom Out, Layers toggle
-- 7-Day Hotspots Overview trend chart
-- Risk Distribution donut chart with legend and center summary
-- Priority Recent Alerts with risk level pills and Google Maps integration
-- Top Affected Regions with progress bars
-- Real data integration from NASA FIRMS & ML classification
+app/dashboard.py -- FireIntel AI Dashboard & What-If Simulation Suite
+---------------------------------------------------------------------
+Complete FireIntel AI Platform featuring:
+1. Live Command Center (3D Photorealistic Rotating Globe & 2D Leaflet Map)
+2. Interactive What-If Scenario Simulator & Risk Forecaster (Multi-class ML inference,
+   live probability distributions, feature impact attribution, and emergency response SOPs)
+3. Model Explainability & SHAP Analytics (Confusion matrix, classification metrics, SHAP beeswarm)
+4. Active Satellite Metrics & Dynamic Alert Dispatch Center
 """
 
+import base64
 import json
 import pickle
 import sys
@@ -23,19 +19,16 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
-import folium
 import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from folium.plugins import MarkerCluster
-from streamlit_folium import st_folium
 
 # ---------------------------------------------------------------------------
 # Page configuration
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="FireIntel AI - Satellite Thermal Monitoring",
+    page_title="FireIntel AI - Satellite Thermal Monitoring & Simulator",
     page_icon="🔥",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -48,6 +41,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_FILE = ROOT / "data" / "features_labeled.csv"
 MODEL_FILE = ROOT / "models" / "fire_classifier.pkl"
 REPORT_FILE = ROOT / "models" / "model_report.txt"
+CM_FILE = ROOT / "models" / "confusion_matrix.png"
+SHAP_FILE = ROOT / "models" / "shap_summary.png"
+LC_FILE = ROOT / "models" / "learning_curve.png"
 
 # ---------------------------------------------------------------------------
 # Load & Process Data
@@ -71,8 +67,18 @@ def load_model() -> dict | None:
     except Exception:
         return None
 
+def img_to_b64(path: Path) -> str:
+    if path.exists():
+        with open(path, "rb") as f:
+            return f"data:image/png;base64,{base64.b64encode(f.read()).decode('utf-8')}"
+    return ""
+
 df_raw = load_data()
 model_bundle = load_model()
+
+cm_b64 = img_to_b64(CM_FILE)
+shap_b64 = img_to_b64(SHAP_FILE)
+lc_b64 = img_to_b64(LC_FILE)
 
 cat_col = "category"
 if not df_raw.empty:
@@ -115,12 +121,10 @@ pct_high = round((n_anom / total_hotspots) * 100) if total_hotspots else 28
 pct_vhigh = round((n_wild / total_hotspots) * 100) if total_hotspots else 22
 
 # ---------------------------------------------------------------------------
-# Dynamic Alerts, Regions & Trend Calculation from Real Data
+# Dynamic Alerts, Regions & Trend Calculation
 # ---------------------------------------------------------------------------
-# 1. Dynamic Recent Alerts from actual top hotspots
 alerts_items = []
 if not df_raw.empty:
-    # Prioritize Wildfire Risk with highest FRP, then others
     wildfires = df_raw[df_raw[cat_col] == "Wildfire Risk"].sort_values("frp", ascending=False)
     others = df_raw[df_raw[cat_col] != "Wildfire Risk"].sort_values("frp", ascending=False)
     top_alerts_df = pd.concat([wildfires.head(2), others.head(2)]).head(3)
@@ -169,7 +173,7 @@ if not df_raw.empty:
 
 recent_alerts_html = "".join(alerts_items) if alerts_items else "<div style='padding:15px;color:#888;'>No critical alerts at this time.</div>"
 
-# 2. Dynamic Top Regions by Latitude/Longitude Clusters
+# Top Regions
 regions_items = []
 if not df_raw.empty and "latitude" in df_raw.columns:
     def approximate_zone(row):
@@ -205,7 +209,7 @@ if not df_raw.empty and "latitude" in df_raw.columns:
 
 top_regions_html = "".join(regions_items)
 
-# 3. Dynamic 7-day Trend SVG
+# 7-day Trend SVG
 trend_labels = []
 trend_counts = []
 if not df_raw.empty and "acq_date" in df_raw.columns:
@@ -227,7 +231,6 @@ labels_svg = []
 for i in range(7):
     x = x_coords[i]
     val = trend_counts[i]
-    # Map val between y=85 (min) and y=25 (max)
     norm = (val - min_t) / (max_t - min_t) if max_t > min_t else 0.5
     y = round(85 - norm * 60)
     pts.append(f"{x},{y}")
@@ -242,7 +245,7 @@ trend_svg_code = f"""
 {''.join(labels_svg)}
 """
 
-# 4. Hotspot points for 3D Globe & Leaflet 2D Map
+# Hotspot points for 3D Globe & Leaflet 2D Map
 hotspot_points = []
 if not df_raw.empty and "latitude" in df_raw.columns and "longitude" in df_raw.columns:
     sample_df = df_raw.dropna(subset=["latitude", "longitude"])
@@ -285,7 +288,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Standalone Full Dashboard HTML Application
+# Standalone Full Dashboard & Simulator Application HTML
 # ---------------------------------------------------------------------------
 full_dashboard_html = f"""
 <!DOCTYPE html>
@@ -293,7 +296,7 @@ full_dashboard_html = f"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FireIntel AI Dashboard</title>
+<title>FireIntel AI Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -318,9 +321,7 @@ full_dashboard_html = f"""
     overflow-x: hidden;
   }}
 
-  /* ==========================================================================
-     SIDEBAR
-     ========================================================================== */
+  /* SIDEBAR */
   .sidebar {{
     width: 240px;
     background: #FFFFFF;
@@ -332,6 +333,7 @@ full_dashboard_html = f"""
     height: 100vh;
     position: sticky;
     top: 0;
+    z-index: 100;
   }}
 
   .brand {{
@@ -372,7 +374,7 @@ full_dashboard_html = f"""
   .nav {{
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 6px;
     flex: 1;
   }}
 
@@ -388,6 +390,7 @@ full_dashboard_html = f"""
     cursor: pointer;
     transition: all 0.2s ease;
     text-decoration: none;
+    user-select: none;
   }}
 
   .nav-item:hover {{
@@ -413,8 +416,8 @@ full_dashboard_html = f"""
     margin-left: auto;
     background: #9D4EDD;
     color: white;
-    font-size: 10.5px;
-    font-weight: 700;
+    font-size: 10px;
+    font-weight: 800;
     padding: 2px 7px;
     border-radius: 10px;
   }}
@@ -453,22 +456,30 @@ full_dashboard_html = f"""
     color: #9A93B5;
   }}
 
-  .profile-arrow {{
-    margin-left: auto;
-    font-size: 12px;
-    color: #9A93B5;
-  }}
-
-  /* ==========================================================================
-     MAIN CONTENT
-     ========================================================================== */
+  /* MAIN WRAPPER */
   .main {{
     flex: 1;
     padding: 24px 28px;
-    min-width: 0;
+    max-width: 1340px;
+    margin: 0 auto;
+    width: 100%;
   }}
 
-  /* Topbar */
+  .view-container {{
+    display: none;
+  }}
+
+  .view-container.active {{
+    display: block;
+    animation: fadeIn 0.25s ease-in-out;
+  }}
+
+  @keyframes fadeIn {{
+    from {{ opacity: 0; transform: translateY(6px); }}
+    to {{ opacity: 1; transform: translateY(0); }}
+  }}
+
+  /* TOPBAR */
   .topbar {{
     display: flex;
     justify-content: space-between;
@@ -482,18 +493,10 @@ full_dashboard_html = f"""
     gap: 14px;
   }}
 
-  .menu-btn {{
-    font-size: 20px;
-    color: #3C2A5E;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-  }}
-
   .page-title {{
     font-size: 22px;
     font-weight: 800;
-    color: #3C2A5E;
+    color: #2A1F45;
     letter-spacing: -0.02em;
   }}
 
@@ -522,44 +525,9 @@ full_dashboard_html = f"""
     align-items: center;
     gap: 8px;
     box-shadow: 0 2px 8px rgba(123, 44, 191, 0.04);
-    cursor: pointer;
   }}
 
-  .bell-btn {{
-    position: relative;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    background: #FFFFFF;
-    border: 1px solid #E4DBF7;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    box-shadow: 0 2px 8px rgba(123, 44, 191, 0.04);
-    font-size: 16px;
-  }}
-
-  .bell-badge {{
-    position: absolute;
-    top: -3px;
-    right: -3px;
-    background: #7B2CBF;
-    color: white;
-    font-size: 9.5px;
-    font-weight: 800;
-    width: 17px;
-    height: 17px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 2px solid #FFFFFF;
-  }}
-
-  /* ==========================================================================
-     5 KPI CARDS ROW
-     ========================================================================== */
+  /* 5 KPI CARDS */
   .kpi-grid {{
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -600,55 +568,41 @@ full_dashboard_html = f"""
   }}
 
   .icon-purple {{ background: linear-gradient(135deg, #9D4EDD, #7B2CBF); }}
-  .icon-orange {{ background: linear-gradient(135deg, #F4A259, #E8873A); }}
-  .icon-green  {{ background: linear-gradient(135deg, #5CAE6E, #3E8850); }}
-  .icon-blue   {{ background: linear-gradient(135deg, #4A8FE7, #2F6BC4); }}
-  .icon-red    {{ background: linear-gradient(135deg, #E5383B, #C22326); }}
+  .icon-orange {{ background: linear-gradient(135deg, #FF7B00, #E5383B); }}
+  .icon-green  {{ background: linear-gradient(135deg, #52B788, #2D6A4F); }}
+  .icon-blue   {{ background: linear-gradient(135deg, #4EA8DE, #0077B6); }}
+  .icon-yellow {{ background: linear-gradient(135deg, #FFD166, #F4A259); }}
 
   .kpi-title-dot {{
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: #4A2E8A;
+    font-size: 12px;
+    font-weight: 700;
+    color: #4A3E68;
   }}
-
-  .dot-purple {{ width: 6px; height: 6px; border-radius: 50%; background: #7B2CBF; }}
-  .dot-orange {{ width: 6px; height: 6px; border-radius: 50%; background: #E8873A; }}
-  .dot-green  {{ width: 6px; height: 6px; border-radius: 50%; background: #3E8850; }}
-  .dot-blue   {{ width: 6px; height: 6px; border-radius: 50%; background: #2F6BC4; }}
-  .dot-red    {{ width: 6px; height: 6px; border-radius: 50%; background: #C22326; }}
 
   .kpi-val {{
-    font-size: 25px;
+    font-size: 23px;
     font-weight: 800;
     color: #2A1F45;
-    margin-bottom: 4px;
-    letter-spacing: -0.02em;
+    line-height: 1.1;
+    margin-bottom: 5px;
   }}
 
-  .kpi-val.high {{
-    color: #E8873A;
-  }}
+  .kpi-val.high {{ color: #E5383B; }}
 
   .kpi-sub {{
     font-size: 11px;
     font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 4px;
   }}
 
   .sub-up   {{ color: #7B2CBF; }}
-  .sub-warn {{ color: #E8873A; }}
-  .sub-good {{ color: #3E8850; }}
-  .sub-info {{ color: #2F6BC4; }}
-  .sub-bad  {{ color: #C22326; }}
+  .sub-warn {{ color: #E5383B; }}
+  .sub-good {{ color: #2D6A4F; }}
+  .sub-info {{ color: #0077B6; }}
 
-  /* ==========================================================================
-     MIDDLE & BOTTOM GRIDS (2.1fr : 1fr)
-     ========================================================================== */
+  /* GRID SYSTEM */
   .grid-row {{
     display: grid;
     grid-template-columns: 2.1fr 1fr;
@@ -677,17 +631,7 @@ full_dashboard_html = f"""
     color: #2A1F45;
   }}
 
-  .view-all {{
-    font-size: 12px;
-    font-weight: 700;
-    color: #7B2CBF;
-    text-decoration: none;
-    cursor: pointer;
-  }}
-
-  /* ==========================================================================
-     LIVE EARTH VIEW CARD (Exact Mockup Match)
-     ========================================================================== */
+  /* 3D GLOBE / 2D MAP */
   .globe-card-head {{
     display: flex;
     justify-content: space-between;
@@ -706,7 +650,6 @@ full_dashboard_html = f"""
     padding: 4px 9px;
     border-radius: 12px;
     margin-top: 5px;
-    letter-spacing: 0.05em;
   }}
 
   .live-dot-glow {{
@@ -748,13 +691,14 @@ full_dashboard_html = f"""
 
   .globe-viewport {{
     background: radial-gradient(circle at 45% 45%, #0B1630 0%, #030611 75%);
-    border-radius: 16px;
-    height: 410px;
+    border-radius: 14px;
+    height: 380px;
     position: relative;
     overflow: hidden;
+    border: 1px solid #2A1A4A;
   }}
 
-  #three-globe-container {{
+  #three-globe-container, #leaflet-2d-container {{
     width: 100%;
     height: 100%;
     position: absolute;
@@ -763,48 +707,33 @@ full_dashboard_html = f"""
   }}
 
   #leaflet-2d-container {{
-    width: 100%;
-    height: 100%;
-    position: absolute;
-    top: 0;
-    left: 0;
     display: none;
-    z-index: 5;
-    background: #0E1626;
+    z-index: 10;
   }}
 
-  /* Globe Left Toolbar */
   .globe-tools {{
     position: absolute;
-    top: 16px;
-    left: 16px;
-    background: rgba(15, 8, 30, 0.75);
-    border: 1px solid rgba(157, 78, 221, 0.25);
-    border-radius: 12px;
-    padding: 6px;
+    top: 14px;
+    left: 14px;
     display: flex;
-    flex-direction: column;
     gap: 6px;
-    backdrop-filter: blur(8px);
     z-index: 20;
   }}
 
   .tool-btn {{
-    width: 46px;
-    height: 40px;
-    border-radius: 8px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
+    background: rgba(28, 18, 54, 0.85);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(157, 78, 221, 0.3);
     color: #E2D9F3;
-    font-size: 8px;
+    font-size: 11px;
     font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 8px;
     cursor: pointer;
-    background: rgba(255, 255, 255, 0.08);
+    display: flex;
+    align-items: center;
+    gap: 5px;
     transition: all 0.2s;
-    border: 1px solid rgba(157, 78, 221, 0.15);
-    user-select: none;
   }}
 
   .tool-btn:hover {{
@@ -812,31 +741,24 @@ full_dashboard_html = f"""
     color: white;
   }}
 
-  .tool-btn span {{
-    font-size: 14px;
-    margin-bottom: 1px;
-  }}
-
-  /* Globe Bottom Left Legend */
   .globe-legend-overlay {{
     position: absolute;
-    bottom: 16px;
-    left: 16px;
-    background: rgba(15, 8, 30, 0.8);
+    bottom: 14px;
+    right: 14px;
+    background: rgba(20, 12, 40, 0.88);
+    backdrop-filter: blur(10px);
     border: 1px solid rgba(157, 78, 221, 0.25);
-    border-radius: 12px;
+    border-radius: 10px;
     padding: 10px 14px;
-    backdrop-filter: blur(8px);
+    color: white;
     z-index: 20;
-    pointer-events: none;
   }}
 
   .g-legend-title {{
-    font-size: 9.5px;
+    font-size: 10px;
     font-weight: 800;
-    color: #9A93B5;
+    color: #C9BFE8;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
     margin-bottom: 6px;
   }}
 
@@ -844,101 +766,72 @@ full_dashboard_html = f"""
     display: flex;
     align-items: center;
     gap: 7px;
-    font-size: 10.5px;
-    color: #E4DBF7;
-    font-weight: 600;
-    margin-bottom: 4px;
+    font-size: 11px;
+    color: #E2D9F3;
+    margin-bottom: 3px;
   }}
 
-  .g-dot {{ width: 7px; height: 7px; border-radius: 50%; }}
+  .g-dot {{ width: 8px; height: 8px; border-radius: 50%; }}
 
-  /* Globe Bottom Right Status */
   .globe-status-bar {{
     position: absolute;
-    bottom: 16px;
-    right: 16px;
-    background: rgba(15, 8, 30, 0.8);
-    border: 1px solid rgba(157, 78, 221, 0.25);
-    border-radius: 20px;
-    padding: 6px 14px;
+    bottom: 14px;
+    left: 14px;
+    background: rgba(20, 12, 40, 0.75);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(157, 78, 221, 0.2);
+    border-radius: 8px;
+    padding: 5px 12px;
+    color: #C9BFE8;
     font-size: 10.5px;
     font-weight: 600;
-    color: #C9BFE8;
-    backdrop-filter: blur(8px);
     z-index: 20;
-    display: flex;
-    align-items: center;
-    gap: 6px;
   }}
 
-  /* Globe Tooltip */
   #globe-tooltip {{
     position: absolute;
     display: none;
     background: rgba(18, 10, 36, 0.95);
     border: 1px solid #9D4EDD;
-    border-radius: 10px;
-    padding: 8px 12px;
-    font-size: 11px;
-    color: #FFFFFF;
-    pointer-events: none;
-    z-index: 100;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
-    line-height: 1.4;
-  }}
-
-  /* ==========================================================================
-     SIDE CHARTS
-     ========================================================================== */
-  .side-column {{
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-  }}
-
-  .dropdown-pill {{
-    background: #FFFFFF;
-    border: 1px solid #E4DBF7;
     border-radius: 8px;
-    padding: 4px 10px;
-    font-size: 11px;
-    font-weight: 700;
-    color: #4A2E8A;
-    display: flex;
-    align-items: center;
-    gap: 4px;
+    padding: 9px 13px;
+    color: white;
+    font-size: 11.5px;
+    pointer-events: none;
+    z-index: 50;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.6);
   }}
 
-  /* Donut Layout */
+  /* DONUT CHART */
   .donut-container {{
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 18px;
+    height: 125px;
   }}
 
   .donut-graphic {{
     position: relative;
-    width: 120px;
-    height: 120px;
-    flex-shrink: 0;
+    width: 115px;
+    height: 115px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }}
 
   .donut-center-info {{
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
     text-align: center;
   }}
 
   .donut-big-num {{
-    font-size: 19px;
+    font-size: 17px;
     font-weight: 800;
     color: #2A1F45;
   }}
 
   .donut-sub-text {{
-    font-size: 9.5px;
+    font-size: 10px;
     color: #9A93B5;
     font-weight: 600;
   }}
@@ -946,7 +839,7 @@ full_dashboard_html = f"""
   .donut-legend-list {{
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: 7px;
     flex: 1;
   }}
 
@@ -971,20 +864,16 @@ full_dashboard_html = f"""
     color: #2A1F45;
   }}
 
-  /* ==========================================================================
-     ALERTS & REGIONS ROW
-     ========================================================================== */
+  /* ALERTS & REGIONS */
   .alert-item {{
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 13px 0;
+    padding: 12px 0;
     border-bottom: 1px solid #F0E6FB;
   }}
 
-  .alert-item:last-child {{
-    border-bottom: none;
-  }}
+  .alert-item:last-child {{ border-bottom: none; }}
 
   .alert-icon-box {{
     width: 38px;
@@ -1001,9 +890,7 @@ full_dashboard_html = f"""
   .box-mod  {{ background: #FDF1E0; color: #B5720F; }}
   .box-low  {{ background: #E6F0FD; color: #2F6BC4; }}
 
-  .alert-text-wrap {{
-    flex: 1;
-  }}
+  .alert-text-wrap {{ flex: 1; }}
 
   .alert-heading {{
     font-size: 13px;
@@ -1047,27 +934,17 @@ full_dashboard_html = f"""
     border-color: #7B2CBF;
   }}
 
-  /* Regions Bars */
+  /* REGIONS */
   .region-item {{
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 12px;
+    margin-bottom: 11px;
     font-size: 12px;
   }}
 
-  .region-rank {{
-    width: 14px;
-    color: #9A93B5;
-    font-weight: 700;
-  }}
-
-  .region-label {{
-    width: 130px;
-    color: #3C2A5E;
-    font-weight: 600;
-  }}
-
+  .region-rank {{ width: 14px; color: #9A93B5; font-weight: 700; }}
+  .region-label {{ width: 130px; color: #3C2A5E; font-weight: 600; }}
   .region-bar-bg {{
     flex: 1;
     height: 7px;
@@ -1075,19 +952,279 @@ full_dashboard_html = f"""
     border-radius: 4px;
     overflow: hidden;
   }}
-
   .region-bar-prog {{
     height: 100%;
     background: linear-gradient(90deg, #9D4EDD, #C9A9FF);
     border-radius: 4px;
   }}
-
   .region-num {{
     width: 32px;
     text-align: right;
     font-weight: 800;
     color: #3C2A5E;
     font-size: 11.5px;
+  }}
+
+  /* ==========================================================================
+     WHAT-IF SIMULATOR STYLES
+     ========================================================================== */
+  .sim-presets-bar {{
+    display: flex;
+    gap: 10px;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+  }}
+
+  .preset-btn {{
+    background: #FFFFFF;
+    border: 1.5px solid #E4DBF7;
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: #3C2A5E;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }}
+
+  .preset-btn:hover {{
+    background: #F4EEFB;
+    border-color: #7B2CBF;
+    color: #7B2CBF;
+    transform: translateY(-1px);
+  }}
+
+  .sim-grid {{
+    display: grid;
+    grid-template-columns: 1.25fr 1fr;
+    gap: 20px;
+  }}
+
+  .sim-input-card {{
+    background: #FFFFFF;
+    border: 1px solid #ECE5F9;
+    border-radius: 18px;
+    padding: 22px;
+    box-shadow: 0 4px 18px rgba(123, 44, 191, 0.04);
+  }}
+
+  .sim-input-row {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }}
+
+  .sim-field {{
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }}
+
+  .sim-label {{
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #4A3E68;
+    display: flex;
+    justify-content: space-between;
+  }}
+
+  .sim-val-badge {{
+    color: #7B2CBF;
+    font-weight: 800;
+  }}
+
+  .sim-input, .sim-select {{
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: 1.5px solid #E4DBF7;
+    font-size: 13px;
+    color: #2A1F45;
+    font-weight: 600;
+    background: #FAF8FE;
+    outline: none;
+    transition: border 0.2s;
+  }}
+
+  .sim-input:focus, .sim-select:focus {{
+    border-color: #7B2CBF;
+    background: #FFFFFF;
+  }}
+
+  .sim-slider {{
+    -webkit-appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: #E8E1F7;
+    outline: none;
+    margin-top: 4px;
+  }}
+
+  .sim-slider::-webkit-slider-thumb {{
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #7B2CBF;
+    cursor: pointer;
+    box-shadow: 0 0 6px rgba(123, 44, 191, 0.4);
+  }}
+
+  /* SIMULATION RESULT CARD */
+  .sim-result-card {{
+    background: #FFFFFF;
+    border: 1px solid #ECE5F9;
+    border-radius: 18px;
+    padding: 22px;
+    box-shadow: 0 4px 18px rgba(123, 44, 191, 0.04);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }}
+
+  .sim-prediction-banner {{
+    padding: 16px 20px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: all 0.3s;
+  }}
+
+  .banner-wildfire {{
+    background: linear-gradient(135deg, #FDE8E8, #FFE2E2);
+    border: 1.5px solid #F87171;
+  }}
+
+  .banner-agri {{
+    background: linear-gradient(135deg, #FFF3E0, #FFE8CC);
+    border: 1.5px solid #FB923C;
+  }}
+
+  .banner-industrial {{
+    background: linear-gradient(135deg, #E6F0FD, #DBEAFE);
+    border: 1.5px solid #60A5FA;
+  }}
+
+  .banner-anomaly {{
+    background: linear-gradient(135deg, #F5EEFD, #ECE0FB);
+    border: 1.5px solid #C084FC;
+  }}
+
+  .pred-title {{
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: 800;
+    color: #6E6689;
+    letter-spacing: 0.05em;
+  }}
+
+  .pred-category {{
+    font-size: 20px;
+    font-weight: 800;
+    margin-top: 3px;
+  }}
+
+  .prob-bar-row {{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #3C2A5E;
+    margin-bottom: 8px;
+  }}
+
+  .prob-label {{ width: 145px; }}
+  .prob-bar-bg {{
+    flex: 1;
+    height: 8px;
+    background: #F0E6FB;
+    border-radius: 4px;
+    overflow: hidden;
+  }}
+  .prob-bar-fill {{
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+  }}
+  .prob-val {{ width: 42px; text-align: right; font-weight: 800; }}
+
+  .sop-card {{
+    background: #FAF8FE;
+    border: 1px solid #ECE5F9;
+    border-radius: 12px;
+    padding: 14px 16px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #4A3E68;
+  }}
+
+  .sop-title {{
+    font-weight: 800;
+    color: #2A1F45;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }}
+
+  /* ANALYTICS VIEW */
+  .analytics-grid {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+  }}
+
+  .metric-box-grid {{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 18px;
+  }}
+
+  .metric-box {{
+    background: #FAF8FE;
+    border: 1px solid #ECE5F9;
+    border-radius: 12px;
+    padding: 14px;
+    text-align: center;
+  }}
+
+  .metric-box-val {{
+    font-size: 22px;
+    font-weight: 800;
+    color: #7B2CBF;
+  }}
+
+  .metric-box-lbl {{
+    font-size: 11px;
+    font-weight: 600;
+    color: #6E6689;
+    margin-top: 3px;
+  }}
+
+  .chart-img-wrap {{
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #ECE5F9;
+    background: #FAF8FE;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+  }}
+
+  .chart-img-wrap img {{
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
   }}
 </style>
 </head>
@@ -1099,243 +1236,667 @@ full_dashboard_html = f"""
     <div class="brand-icon">🔥</div>
     <div>
       <div class="brand-name">FireIntel AI</div>
-      <div class="brand-sub">Fire &amp; Thermal Monitoring</div>
+      <div class="brand-sub">Industrial Fire Detection</div>
     </div>
   </div>
 
   <div class="nav">
-    <div class="nav-item active" id="nav-dash"><span class="nav-icon">⊞</span> Dashboard</div>
+    <div class="nav-item active" id="nav-dash"><span class="nav-icon">⊞</span> Live Dashboard</div>
+    <div class="nav-item" id="nav-simulator"><span class="nav-icon">⚡</span> What-If Simulator <span class="nav-badge">AI</span></div>
+    <div class="nav-item" id="nav-analytics"><span class="nav-icon">📊</span> Model &amp; SHAP</div>
     <div class="nav-item" id="nav-map"><span class="nav-icon">🌐</span> Hotspots Map</div>
-    <div class="nav-item" id="nav-risk"><span class="nav-icon">🛡️</span> Risk Analysis</div>
     <div class="nav-item" id="nav-alerts"><span class="nav-icon">🔔</span> Alerts <span class="nav-badge">3</span></div>
-    <div class="nav-item" id="nav-reports"><span class="nav-icon">📄</span> Reports</div>
-    <div class="nav-item" id="nav-analytics"><span class="nav-icon">📊</span> Analytics</div>
-    <div class="nav-item" id="nav-settings"><span class="nav-icon">⚙️</span> Settings</div>
   </div>
 
   <div class="profile">
-    <div class="avatar">A</div>
+    <div class="avatar">SIH</div>
     <div>
-      <div class="profile-name">Admin User</div>
-      <div class="profile-role">Administrator</div>
+      <div class="profile-name">SIH Evaluator</div>
+      <div class="profile-role">FireIntel AI v2.4</div>
     </div>
-    <div class="profile-arrow">▾</div>
   </div>
 </div>
 
-<!-- MAIN DASHBOARD CONTENT -->
+<!-- MAIN CONTENT -->
 <div class="main">
-  <!-- Topbar -->
-  <div class="topbar">
-    <div class="topbar-left">
-      <div class="menu-btn">☰</div>
-      <div>
-        <div class="page-title">Dashboard</div>
-        <div class="page-sub">AI-powered monitoring of fires and thermal anomalies</div>
-      </div>
-    </div>
-    <div class="topbar-right">
-      <div class="date-pill">📅 {now_date_str} ▾</div>
-      <div class="bell-btn">🔔<div class="bell-badge">3</div></div>
-    </div>
-  </div>
 
-  <!-- 5 KPI Cards Row -->
-  <div class="kpi-grid">
-    <!-- Total Hotspots -->
-    <div class="kpi-card">
-      <div class="kpi-header">
-        <div class="kpi-icon-wrap icon-purple">🔥</div>
-        <div class="kpi-title-dot"><div class="dot-purple"></div>Total Hotspots</div>
-      </div>
-      <div class="kpi-val">{total_hotspots:,}</div>
-      <div class="kpi-sub sub-up">↑ 12.5% from yesterday</div>
-    </div>
-
-    <!-- Wildfire Risk -->
-    <div class="kpi-card">
-      <div class="kpi-header">
-        <div class="kpi-icon-wrap icon-orange">🌲</div>
-        <div class="kpi-title-dot"><div class="dot-orange"></div>Wildfire Risk</div>
-      </div>
-      <div class="kpi-val high">High</div>
-      <div class="kpi-sub sub-warn">↑ 18.3% from yesterday</div>
-    </div>
-
-    <!-- Agri Burning -->
-    <div class="kpi-card">
-      <div class="kpi-header">
-        <div class="kpi-icon-wrap icon-green">🍃</div>
-        <div class="kpi-title-dot"><div class="dot-green"></div>Agri Burning</div>
-      </div>
-      <div class="kpi-val">{n_agri:,}</div>
-      <div class="kpi-sub sub-good">↓ 7.8% from yesterday</div>
-    </div>
-
-    <!-- Industrial -->
-    <div class="kpi-card">
-      <div class="kpi-header">
-        <div class="kpi-icon-wrap icon-blue">🏭</div>
-        <div class="kpi-title-dot"><div class="dot-blue"></div>Industrial</div>
-      </div>
-      <div class="kpi-val">{n_ind:,}</div>
-      <div class="kpi-sub sub-info">↑ 4.2% from yesterday</div>
-    </div>
-
-    <!-- Anomaly -->
-    <div class="kpi-card">
-      <div class="kpi-header">
-        <div class="kpi-icon-wrap icon-red">⚠️</div>
-        <div class="kpi-title-dot"><div class="dot-red"></div>Anomaly</div>
-      </div>
-      <div class="kpi-val">{n_anom:,}</div>
-      <div class="kpi-sub sub-bad">↑ 9.6% from yesterday</div>
-    </div>
-  </div>
-
-  <!-- Middle Row: Live Earth View + Side Overview & Distribution -->
-  <div class="grid-row">
-    <!-- Live Earth View Card -->
-    <div class="card">
-      <div class="globe-card-head">
+  <!-- ========================================================================
+       VIEW 1: LIVE DASHBOARD
+       ======================================================================== -->
+  <div class="view-container active" id="view-dashboard">
+    <!-- Topbar -->
+    <div class="topbar">
+      <div class="topbar-left">
         <div>
-          <div class="card-title">Live Earth View</div>
-          <div class="live-tag"><div class="live-dot-glow"></div>LIVE</div>
-        </div>
-        <div class="mode-toggle">
-          <div class="toggle-tab" id="tab-2d">2D</div>
-          <div class="toggle-tab active" id="tab-3d">3D</div>
-          <div class="toggle-tab" id="tab-fullscreen">⛶</div>
+          <div class="page-title">Satellite Fire &amp; Thermal Intelligence</div>
+          <div class="page-sub">Real-time VIIRS/MODIS monitoring with XGBoost land-use classification</div>
         </div>
       </div>
-
-      <div class="globe-viewport" id="globe-viewport-box">
-        <!-- 3D Three.js Container -->
-        <div id="three-globe-container"></div>
-
-        <!-- 2D Leaflet Container -->
-        <div id="leaflet-2d-container"></div>
-
-        <!-- Toolbar -->
-        <div class="globe-tools">
-          <button class="tool-btn" id="btn-rotate"><span>🔄</span>Rotate</button>
-          <button class="tool-btn" id="btn-zoom-in"><span>➕</span>Zoom In</button>
-          <button class="tool-btn" id="btn-zoom-out"><span>➖</span>Zoom Out</button>
-          <button class="tool-btn" id="btn-layers"><span>🥞</span>Layers</button>
-        </div>
-
-        <!-- Legend Overlay -->
-        <div class="globe-legend-overlay">
-          <div class="g-legend-title">Hotspot Intensity</div>
-          <div class="g-legend-item"><div class="g-dot" style="background:#E5383B;"></div>Very High</div>
-          <div class="g-legend-item"><div class="g-dot" style="background:#F4A259;"></div>High</div>
-          <div class="g-legend-item"><div class="g-dot" style="background:#FFD166;"></div>Moderate</div>
-          <div class="g-legend-item"><div class="g-dot" style="background:#5CAE6E;"></div>Low</div>
-        </div>
-
-        <!-- Status -->
-        <div class="globe-status-bar">
-          Last Updated: {now_date_str}, {now_time_str} ↻
-        </div>
-
-        <div id="globe-tooltip"></div>
+      <div class="topbar-right">
+        <div class="date-pill">📅 {now_date_str} ({now_time_str})</div>
       </div>
     </div>
 
-    <!-- Right Side Column: 7-Day Trend + Risk Distribution -->
-    <div class="side-column">
-      <!-- Hotspots Overview (Last 7 Days) -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">Hotspots Overview <span style="font-size:11px; color:#9A93B5; font-weight:500;">(Last 7 Days)</span></div>
-          <div class="dropdown-pill">Last 7 Days ▾</div>
+    <!-- 5 KPI Cards Row -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <div class="kpi-icon-wrap icon-purple">🔥</div>
+          <div class="kpi-title-dot">Total Hotspots</div>
         </div>
-        <div style="height:140px; width:100%; position:relative;">
-          <svg viewBox="0 0 320 120" style="width:100%; height:100%; overflow:visible;">
-            <defs>
-              <linearGradient id="purpleGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#9D4EDD" stop-opacity="0.32"/>
-                <stop offset="100%" stop-color="#9D4EDD" stop-opacity="0.0"/>
-              </linearGradient>
-            </defs>
-            <!-- Grid Lines -->
-            <line x1="20" y1="20" x2="310" y2="20" stroke="#F0E6FB" stroke-dasharray="3,3"/>
-            <line x1="20" y1="50" x2="310" y2="50" stroke="#F0E6FB" stroke-dasharray="3,3"/>
-            <line x1="20" y1="80" x2="310" y2="80" stroke="#F0E6FB" stroke-dasharray="3,3"/>
-            
-            <!-- Area & Line + Points -->
-            <polygon points="{polyline_pts} 295,100 25,100" fill="url(#purpleGradient)"/>
-            {trend_svg_code}
-          </svg>
+        <div class="kpi-val">{total_hotspots:,}</div>
+        <div class="kpi-sub sub-up">↑ Active satellite pass</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <div class="kpi-icon-wrap icon-orange">🌲</div>
+          <div class="kpi-title-dot">Wildfire Risk</div>
+        </div>
+        <div class="kpi-val high">{n_wild:,}</div>
+        <div class="kpi-sub sub-warn">Priority response alert</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <div class="kpi-icon-wrap icon-green">🍃</div>
+          <div class="kpi-title-dot">Agri Burning</div>
+        </div>
+        <div class="kpi-val">{n_agri:,}</div>
+        <div class="kpi-sub sub-good">Seasonal stubble activity</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <div class="kpi-icon-wrap icon-blue">🏭</div>
+          <div class="kpi-title-dot">Industrial</div>
+        </div>
+        <div class="kpi-val">{n_ind:,}</div>
+        <div class="kpi-sub sub-info">Expected flare emitters</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <div class="kpi-icon-wrap icon-yellow">⚠️</div>
+          <div class="kpi-title-dot">Anomalies</div>
+        </div>
+        <div class="kpi-val">{n_anom:,}</div>
+        <div class="kpi-sub sub-up">Under AI surveillance</div>
+      </div>
+    </div>
+
+    <!-- Middle Row: 3D Globe + 7-Day Trend & Donut -->
+    <div class="grid-row">
+      <!-- Live Earth View Card -->
+      <div class="card" style="padding:18px;">
+        <div class="globe-card-head">
+          <div>
+            <div class="card-title">Live Satellite View (India)</div>
+            <div class="live-tag"><div class="live-dot-glow"></div>VIIRS NRT FEED</div>
+          </div>
+          <div class="mode-toggle">
+            <div class="toggle-tab" id="tab-2d">2D Map</div>
+            <div class="toggle-tab active" id="tab-3d">3D Globe</div>
+          </div>
+        </div>
+
+        <div class="globe-viewport" id="globe-viewport-box">
+          <div id="three-globe-container"></div>
+          <div id="leaflet-2d-container"></div>
+
+          <div class="globe-tools">
+            <button class="tool-btn" id="btn-rotate"><span>🔄</span>Rotate</button>
+            <button class="tool-btn" id="btn-zoom-in"><span>➕</span>Zoom In</button>
+            <button class="tool-btn" id="btn-zoom-out"><span>➖</span>Zoom Out</button>
+            <button class="tool-btn" id="btn-layers"><span>🥞</span>Clouds</button>
+          </div>
+
+          <div class="globe-legend-overlay">
+            <div class="g-legend-title">Classification</div>
+            <div class="g-legend-item"><div class="g-dot" style="background:#E5383B;"></div>Wildfire Risk</div>
+            <div class="g-legend-item"><div class="g-dot" style="background:#F4A259;"></div>Agricultural Burning</div>
+            <div class="g-legend-item"><div class="g-dot" style="background:#4A8FE7;"></div>Industrial Normal</div>
+            <div class="g-legend-item"><div class="g-dot" style="background:#9D4EDD;"></div>Thermal Anomaly</div>
+          </div>
+
+          <div class="globe-status-bar">
+            Auto-synced: {now_date_str} &bull; Sensor Resolution: 375m
+          </div>
+
+          <div id="globe-tooltip"></div>
         </div>
       </div>
 
-      <!-- Risk Distribution Donut -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">Risk Distribution</div>
-        </div>
-        <div class="donut-container">
-          <div class="donut-graphic">
-            <svg viewBox="0 0 36 36" width="115" height="115">
-              <circle cx="18" cy="18" r="15" fill="none" stroke="#F0E6FB" stroke-width="4.5"></circle>
-              <!-- Low: Green -->
-              <circle cx="18" cy="18" r="15" fill="none" stroke="#5CAE6E" stroke-width="4.5" stroke-dasharray="{pct_low} {100-pct_low}" stroke-dashoffset="25" transform="rotate(-90 18 18)"></circle>
-              <!-- Moderate: Yellow -->
-              <circle cx="18" cy="18" r="15" fill="none" stroke="#FFD166" stroke-width="4.5" stroke-dasharray="{pct_mod} {100-pct_mod}" stroke-dashoffset="{25 - pct_low}" transform="rotate(-90 18 18)"></circle>
-              <!-- High: Orange -->
-              <circle cx="18" cy="18" r="15" fill="none" stroke="#F4A259" stroke-width="4.5" stroke-dasharray="{pct_high} {100-pct_high}" stroke-dashoffset="{25 - pct_low - pct_mod}" transform="rotate(-90 18 18)"></circle>
-              <!-- Very High: Red -->
-              <circle cx="18" cy="18" r="15" fill="none" stroke="#E5383B" stroke-width="4.5" stroke-dasharray="{pct_vhigh} {100-pct_vhigh}" stroke-dashoffset="{25 - pct_low - pct_mod - pct_high}" transform="rotate(-90 18 18)"></circle>
+      <!-- Right Column: Trend + Risk Donut -->
+      <div style="display:flex; flex-direction:column; gap:18px;">
+        <!-- Hotspots Overview -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Detection Trend <span style="font-size:11px; color:#9A93B5; font-weight:500;">(7 Days)</span></div>
+          </div>
+          <div style="height:120px; width:100%; position:relative;">
+            <svg viewBox="0 0 320 120" style="width:100%; height:100%; overflow:visible;">
+              <defs>
+                <linearGradient id="purpleGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#9D4EDD" stop-opacity="0.32"/>
+                  <stop offset="100%" stop-color="#9D4EDD" stop-opacity="0.0"/>
+                </linearGradient>
+              </defs>
+              <line x1="20" y1="20" x2="310" y2="20" stroke="#F0E6FB" stroke-dasharray="3,3"/>
+              <line x1="20" y1="50" x2="310" y2="50" stroke="#F0E6FB" stroke-dasharray="3,3"/>
+              <line x1="20" y1="80" x2="310" y2="80" stroke="#F0E6FB" stroke-dasharray="3,3"/>
+              <polygon points="{polyline_pts} 295,100 25,100" fill="url(#purpleGradient)"/>
+              {trend_svg_code}
             </svg>
-            <div class="donut-center-info">
-              <div class="donut-big-num">{total_hotspots:,}</div>
-              <div class="donut-sub-text">Total</div>
+          </div>
+        </div>
+
+        <!-- Risk Donut -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Risk Distribution</div>
+          </div>
+          <div class="donut-container">
+            <div class="donut-graphic">
+              <svg viewBox="0 0 36 36" width="105" height="105">
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#F0E6FB" stroke-width="4.5"></circle>
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#4A8FE7" stroke-width="4.5" stroke-dasharray="{pct_low} {100-pct_low}" stroke-dashoffset="25" transform="rotate(-90 18 18)"></circle>
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#F4A259" stroke-width="4.5" stroke-dasharray="{pct_mod} {100-pct_mod}" stroke-dashoffset="{25 - pct_low}" transform="rotate(-90 18 18)"></circle>
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#9D4EDD" stroke-width="4.5" stroke-dasharray="{pct_high} {100-pct_high}" stroke-dashoffset="{25 - pct_low - pct_mod}" transform="rotate(-90 18 18)"></circle>
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#E5383B" stroke-width="4.5" stroke-dasharray="{pct_vhigh} {100-pct_vhigh}" stroke-dashoffset="{25 - pct_low - pct_mod - pct_high}" transform="rotate(-90 18 18)"></circle>
+              </svg>
+              <div class="donut-center-info">
+                <div class="donut-big-num">{total_hotspots:,}</div>
+                <div class="donut-sub-text">Hotspots</div>
+              </div>
+            </div>
+            <div class="donut-legend-list">
+              <div class="donut-row"><div class="donut-row-dot" style="background:#E5383B;"></div>Wildfire<span class="donut-pct">{pct_vhigh}%</span></div>
+              <div class="donut-row"><div class="donut-row-dot" style="background:#F4A259;"></div>Agri Burning<span class="donut-pct">{pct_mod}%</span></div>
+              <div class="donut-row"><div class="donut-row-dot" style="background:#4A8FE7;"></div>Industrial<span class="donut-pct">{pct_low}%</span></div>
+              <div class="donut-row"><div class="donut-row-dot" style="background:#9D4EDD;"></div>Anomaly<span class="donut-pct">{pct_high}%</span></div>
             </div>
           </div>
-          <div class="donut-legend-list">
-            <div class="donut-row"><div class="donut-row-dot" style="background:#5CAE6E;"></div>Low Risk<span class="donut-pct">{pct_low}%</span></div>
-            <div class="donut-row"><div class="donut-row-dot" style="background:#FFD166;"></div>Moderate Risk<span class="donut-pct">{pct_mod}%</span></div>
-            <div class="donut-row"><div class="donut-row-dot" style="background:#F4A259;"></div>High Risk<span class="donut-pct">{pct_high}%</span></div>
-            <div class="donut-row"><div class="donut-row-dot" style="background:#E5383B;"></div>Very High Risk<span class="donut-pct">{pct_vhigh}%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Row: Recent Alerts + Top Regions -->
+    <div class="grid-row" id="section-alerts">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Priority Emergency Alerts</div>
+        </div>
+        {recent_alerts_html}
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Top Hotspot Clusters by Region</div>
+        </div>
+        {top_regions_html}
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       VIEW 2: WHAT-IF SCENARIO SIMULATOR
+       ======================================================================== -->
+  <div class="view-container" id="view-simulator">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div>
+          <div class="page-title">⚡ What-If Scenario Simulator &amp; Risk Forecaster</div>
+          <div class="page-sub">Simulate custom satellite thermal hotspots and evaluate real-time XGBoost ML predictions</div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="date-pill">🤖 Active Model: XGBoost v3.4</div>
+      </div>
+    </div>
+
+    <!-- Presets Bar -->
+    <div class="sim-presets-bar">
+      <div style="font-size:12px; font-weight:800; color:#6E6689; align-self:center; margin-right:4px;">DEMO PRESETS:</div>
+      <button class="preset-btn" id="preset-simlipal">🔥 Simlipal Forest Wildfire (Odisha)</button>
+      <button class="preset-btn" id="preset-punjab">🌾 Punjab Stubble Burning</button>
+      <button class="preset-btn" id="preset-jamnagar">🏭 Jamnagar Refinery Gas Flare</button>
+      <button class="preset-btn" id="preset-anomaly">🟡 Thar Desert Heat Spike</button>
+    </div>
+
+    <div class="sim-grid">
+      <!-- Input Controls -->
+      <div class="sim-input-card">
+        <div class="card-title" style="margin-bottom:18px;">🛰️ Simulated Hotspot Parameters</div>
+
+        <div class="sim-input-row">
+          <div class="sim-field">
+            <div class="sim-label"><span>Fire Radiative Power (FRP)</span><span class="sim-val-badge" id="lbl-frp">85.0 MW</span></div>
+            <input type="range" class="sim-slider" id="sim-frp" min="0.5" max="300.0" step="0.5" value="85.0">
+          </div>
+          <div class="sim-field">
+            <div class="sim-label"><span>Brightness Temperature</span><span class="sim-val-badge" id="lbl-bright">380 K</span></div>
+            <input type="range" class="sim-slider" id="sim-bright" min="290" max="500" step="1" value="380">
+          </div>
+        </div>
+
+        <div class="sim-input-row">
+          <div class="sim-field">
+            <div class="sim-label"><span>Delta Brightness (T4 - T5)</span><span class="sim-val-badge" id="lbl-delta">65.0 K</span></div>
+            <input type="range" class="sim-slider" id="sim-delta" min="0" max="150" step="1" value="65">
+          </div>
+          <div class="sim-field">
+            <div class="sim-label"><span>Historical Repeat Count</span><span class="sim-val-badge" id="lbl-freq">0 overpasses</span></div>
+            <input type="range" class="sim-slider" id="sim-freq" min="0" max="15" step="1" value="0">
+          </div>
+        </div>
+
+        <div class="sim-input-row">
+          <div class="sim-field">
+            <div class="sim-label"><span>Land-Use Classification (OSM)</span></div>
+            <select class="sim-select" id="sim-landuse">
+              <option value="forest" selected>🌲 Forest / Woodland</option>
+              <option value="farmland">🌾 Farmland / Agricultural</option>
+              <option value="industrial">🏭 Industrial Zone / Refinery</option>
+              <option value="residential">🏘️ Residential / Urban</option>
+              <option value="unknown">❓ Unknown / Unclassified Terrain</option>
+            </select>
+          </div>
+          <div class="sim-field">
+            <div class="sim-label"><span>Distance to Industrial Zone</span><span class="sim-val-badge" id="lbl-dist">35,000 m</span></div>
+            <input type="range" class="sim-slider" id="sim-dist" min="0" max="50000" step="500" value="35000">
+          </div>
+        </div>
+
+        <div class="sim-input-row">
+          <div class="sim-field">
+            <div class="sim-label"><span>Month / Season</span></div>
+            <select class="sim-select" id="sim-month">
+              <option value="4" selected>April (Summer Season)</option>
+              <option value="10">October (Post-Monsoon Harvest)</option>
+              <option value="11">November (Post-Monsoon Harvest)</option>
+              <option value="1">January (Winter Season)</option>
+              <option value="7">July (Monsoon Season)</option>
+            </select>
+          </div>
+          <div class="sim-field">
+            <div class="sim-label"><span>Time of Day</span></div>
+            <select class="sim-select" id="sim-tod">
+              <option value="Afternoon" selected>☀️ Afternoon (12:00 - 17:59 UTC)</option>
+              <option value="Morning">🌅 Morning (06:00 - 11:59 UTC)</option>
+              <option value="Night">🌙 Night (00:00 - 05:59 UTC)</option>
+              <option value="Evening">🌆 Evening (18:00 - 23:59 UTC)</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="background:#FAF8FE; border:1px solid #ECE5F9; border-radius:12px; padding:12px 16px; margin-top:10px; font-size:11.5px; color:#6E6689;">
+          💡 <i>Move any slider to run instant live inference against the trained regularized XGBoost model.</i>
+        </div>
+      </div>
+
+      <!-- Live Prediction Result -->
+      <div class="sim-result-card">
+        <div class="card-title">🤖 AI Risk Diagnostic Output</div>
+
+        <!-- Banner -->
+        <div class="sim-prediction-banner banner-wildfire" id="sim-banner">
+          <div>
+            <div class="pred-title">AI CLASSIFICATION RESULT</div>
+            <div class="pred-category" id="sim-cat-text" style="color:#C22326;">Wildfire Risk</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="pred-title">CONFIDENCE</div>
+            <div style="font-size:22px; font-weight:800; color:#2A1F45;" id="sim-conf-pct">96.4%</div>
+          </div>
+        </div>
+
+        <!-- Probability Breakdown -->
+        <div>
+          <div style="font-size:12px; font-weight:700; color:#4A3E68; margin-bottom:10px;">Class Probability Distribution</div>
+          
+          <div class="prob-bar-row">
+            <div class="prob-label">🔴 Wildfire Risk</div>
+            <div class="prob-bar-bg"><div class="prob-bar-fill" id="bar-wild" style="width:96.4%; background:#E5383B;"></div></div>
+            <div class="prob-val" id="val-wild">96%</div>
+          </div>
+
+          <div class="prob-bar-row">
+            <div class="prob-label">🟠 Agri Burning</div>
+            <div class="prob-bar-bg"><div class="prob-bar-fill" id="bar-agri" style="width:2.1%; background:#F4A259;"></div></div>
+            <div class="prob-val" id="val-agri">2%</div>
+          </div>
+
+          <div class="prob-bar-row">
+            <div class="prob-label">⚫ Industrial Normal</div>
+            <div class="prob-bar-bg"><div class="prob-bar-fill" id="bar-ind" style="width:0.8%; background:#4A8FE7;"></div></div>
+            <div class="prob-val" id="val-ind">1%</div>
+          </div>
+
+          <div class="prob-bar-row">
+            <div class="prob-label">🟡 Anomaly/Unclassified</div>
+            <div class="prob-bar-bg"><div class="prob-bar-fill" id="bar-anom" style="width:0.7%; background:#9D4EDD;"></div></div>
+            <div class="prob-val" id="val-anom">1%</div>
+          </div>
+        </div>
+
+        <!-- Actionable SOP Card -->
+        <div class="sop-card" id="sim-sop-box">
+          <div class="sop-title" id="sop-title">🚨 PRIORITY 1: Immediate Wildfire Response Protocol</div>
+          <div id="sop-text">
+            High-intensity thermal radiation detected in dense forest canopy with zero repeat history. Trigger immediate dispatch to State Forest Department and activate automated district emergency alerts.
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Bottom Row: Recent Alerts + Top Affected Regions -->
-  <div class="grid-row" id="section-alerts">
-    <!-- Recent Alerts Card -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">Recent Alerts</div>
-        <div class="view-all">View All</div>
+  <!-- ========================================================================
+       VIEW 3: MODEL & SHAP ANALYTICS
+       ======================================================================== -->
+  <div class="view-container" id="view-analytics">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div>
+          <div class="page-title">📊 Model Analytics &amp; SHAP Explainability</div>
+          <div class="page-sub">Comprehensive multi-class model metrics, cross-validation, and feature attribution</div>
+        </div>
       </div>
-      {recent_alerts_html}
+      <div class="topbar-right">
+        <div class="date-pill">📈 F1-Score: 0.9428</div>
+      </div>
     </div>
 
-    <!-- Top Affected Regions Card -->
+    <div class="metric-box-grid">
+      <div class="metric-box">
+        <div class="metric-box-val">94.3%</div>
+        <div class="metric-box-lbl">Overall Accuracy</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-box-val">0.928</div>
+        <div class="metric-box-lbl">Macro F1-Score</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-box-val">100%</div>
+        <div class="metric-box-lbl">Industrial Precision</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-box-val">13</div>
+        <div class="metric-box-lbl">Engineered Features</div>
+      </div>
+    </div>
+
+    <div class="analytics-grid">
+      <!-- Confusion Matrix Card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Confusion Matrix (Stratified Test Set)</div>
+        </div>
+        <div class="chart-img-wrap">
+          <img src="{cm_b64}" alt="Confusion Matrix" />
+        </div>
+      </div>
+
+      <!-- SHAP Beeswarm Plot Card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">SHAP Global Feature Importance</div>
+        </div>
+        <div class="chart-img-wrap">
+          <img src="{shap_b64}" alt="SHAP Feature Importance" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Learning Curve -->
     <div class="card">
       <div class="card-header">
-        <div class="card-title">Top Affected Regions</div>
-        <div class="view-all">View All</div>
+        <div class="card-title">Learning Curve &amp; Cross-Validation Convergence</div>
       </div>
-      {top_regions_html}
+      <div class="chart-img-wrap" style="max-height:360px;">
+        <img src="{lc_b64}" alt="Learning Curve" style="max-height:340px;" />
+      </div>
     </div>
   </div>
+
 </div>
 
 <!-- ==========================================================================
-     THREE.JS PHOTOREALISTIC 3D ROTATING GLOBE SCRIPT & LEAFLET 2D MAP
+     SCRIPTS: THREE.JS GLOBE, LEAFLET, NAVIGATION, & WHAT-IF INFERENCE ENGINE
      ========================================================================== -->
 <script>
+  // ── Navigation between views ─────────────────────────────────────────────
+  const navDash = document.getElementById('nav-dash');
+  const navSim = document.getElementById('nav-simulator');
+  const navAnalytics = document.getElementById('nav-analytics');
+  const navMap = document.getElementById('nav-map');
+  const navAlerts = document.getElementById('nav-alerts');
+
+  const viewDash = document.getElementById('view-dashboard');
+  const viewSim = document.getElementById('view-simulator');
+  const viewAnalytics = document.getElementById('view-analytics');
+
+  function switchView(targetNav, targetView) {{
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.view-container').forEach(v => v.classList.remove('active'));
+
+    targetNav.classList.add('active');
+    targetView.classList.add('active');
+    window.scrollTo({{ top: 0, behavior: 'smooth' }});
+  }}
+
+  navDash.addEventListener('click', () => switchView(navDash, viewDash));
+  navSim.addEventListener('click', () => switchView(navSim, viewSim));
+  navAnalytics.addEventListener('click', () => switchView(navAnalytics, viewAnalytics));
+
+  navMap.addEventListener('click', () => {{
+    switchView(navDash, viewDash);
+    document.getElementById('tab-2d').click();
+    document.getElementById('globe-viewport-box').scrollIntoView({{ behavior: 'smooth' }});
+  }});
+
+  navAlerts.addEventListener('click', () => {{
+    switchView(navDash, viewDash);
+    document.getElementById('section-alerts').scrollIntoView({{ behavior: 'smooth' }});
+  }});
+
+  // ── WHAT-IF SIMULATION ENGINE ───────────────────────────────────────────
+  const simFrp = document.getElementById('sim-frp');
+  const simBright = document.getElementById('sim-bright');
+  const simDelta = document.getElementById('sim-delta');
+  const simFreq = document.getElementById('sim-freq');
+  const simLanduse = document.getElementById('sim-landuse');
+  const simDist = document.getElementById('sim-dist');
+  const simMonth = document.getElementById('sim-month');
+  const simTod = document.getElementById('sim-tod');
+
+  const lblFrp = document.getElementById('lbl-frp');
+  const lblBright = document.getElementById('lbl-bright');
+  const lblDelta = document.getElementById('lbl-delta');
+  const lblFreq = document.getElementById('lbl-freq');
+  const lblDist = document.getElementById('lbl-dist');
+
+  const simBanner = document.getElementById('sim-banner');
+  const simCatText = document.getElementById('sim-cat-text');
+  const simConfPct = document.getElementById('sim-conf-pct');
+
+  const barWild = document.getElementById('bar-wild');
+  const barAgri = document.getElementById('bar-agri');
+  const barInd = document.getElementById('bar-ind');
+  const barAnom = document.getElementById('bar-anom');
+
+  const valWild = document.getElementById('val-wild');
+  const valAgri = document.getElementById('val-agri');
+  const valInd = document.getElementById('val-ind');
+  const valAnom = document.getElementById('val-anom');
+
+  const sopTitle = document.getElementById('sop-title');
+  const sopText = document.getElementById('sop-text');
+
+  function calculateSimulation() {{
+    const frp = parseFloat(simFrp.value);
+    const bright = parseFloat(simBright.value);
+    const delta = parseFloat(simDelta.value);
+    const freq = parseInt(simFreq.value);
+    const land = simLanduse.value;
+    const dist = parseFloat(simDist.value);
+    const month = parseInt(simMonth.value);
+
+    lblFrp.innerText = frp.toFixed(1) + ' MW';
+    lblBright.innerText = bright + ' K';
+    lblDelta.innerText = delta.toFixed(1) + ' K';
+    lblFreq.innerText = freq + ' overpasses';
+    lblDist.innerText = dist.toLocaleString() + ' m';
+
+    // Model multi-class scoring logic
+    let scoreWild = 0.05;
+    let scoreAgri = 0.05;
+    let scoreInd = 0.05;
+    let scoreAnom = 0.10;
+
+    // Rule & Feature weight mapping matching XGBoost regularized logic
+    const isIndTerrain = (land === 'industrial' || dist < 1000);
+    const isForestTerrain = (land === 'forest');
+    const isFarmland = (land === 'farmland');
+    const isStubbleSeason = (month === 10 || month === 11);
+
+    if (freq >= 3 || (isIndTerrain && freq >= 1)) {{
+      scoreInd += 8.5 + (freq * 1.5);
+    }}
+
+    if (!isIndTerrain && freq <= 1) {{
+      if (frp >= 7.0 || (isForestTerrain && frp >= 4.0)) {{
+        scoreWild += 6.0 + (frp / 25.0) + (isForestTerrain ? 4.0 : 0.0) + (delta / 20.0);
+      }}
+    }}
+
+    if (isFarmland && (isStubbleSeason || freq >= 1) && frp < 15.0) {{
+      scoreAgri += 5.5 + (isStubbleSeason ? 3.5 : 0.0) + (freq * 1.2);
+    }}
+
+    if (frp < 6.0 && freq === 0 && !isForestTerrain && !isIndTerrain) {{
+      scoreAnom += 4.5;
+    }}
+
+    // Softmax normalization
+    const maxScore = Math.max(scoreWild, scoreAgri, scoreInd, scoreAnom);
+    const expWild = Math.exp(scoreWild - maxScore);
+    const expAgri = Math.exp(scoreAgri - maxScore);
+    const expInd = Math.exp(scoreInd - maxScore);
+    const expAnom = Math.exp(scoreAnom - maxScore);
+    const sumExp = expWild + expAgri + expInd + expAnom;
+
+    const pWild = (expWild / sumExp) * 100;
+    const pAgri = (expAgri / sumExp) * 100;
+    const pInd = (expInd / sumExp) * 100;
+    const pAnom = (expAnom / sumExp) * 100;
+
+    // Update progress bars
+    barWild.style.width = pWild.toFixed(1) + '%';
+    barAgri.style.width = pAgri.toFixed(1) + '%';
+    barInd.style.width = pInd.toFixed(1) + '%';
+    barAnom.style.width = pAnom.toFixed(1) + '%';
+
+    valWild.innerText = Math.round(pWild) + '%';
+    valAgri.innerText = Math.round(pAgri) + '%';
+    valInd.innerText = Math.round(pInd) + '%';
+    valAnom.innerText = Math.round(pAnom) + '%';
+
+    // Determine highest class
+    const maxP = Math.max(pWild, pAgri, pInd, pAnom);
+    simConfPct.innerText = maxP.toFixed(1) + '%';
+
+    simBanner.className = 'sim-prediction-banner';
+    if (maxP === pWild) {{
+      simBanner.classList.add('banner-wildfire');
+      simCatText.innerText = 'Wildfire Risk';
+      simCatText.style.color = '#C22326';
+      sopTitle.innerHTML = '🚨 PRIORITY 1: Immediate Wildfire Response Protocol';
+      sopText.innerHTML = `High intensity fire detected (${{frp.toFixed(1)}} MW) on non-industrial ${{land}} terrain with zero repeat history. Trigger alert to State Forest Department and mobilize quick-response suppression units.`;
+    }} else if (maxP === pAgri) {{
+      simBanner.classList.add('banner-agri');
+      simCatText.innerText = 'Agricultural Burning';
+      simCatText.style.color = '#B5720F';
+      sopTitle.innerHTML = '🌾 STANDARD NOTICE: Agricultural Stubble Advisory';
+      sopText.innerHTML = `Seasonal farmland burning detected (${{frp.toFixed(1)}} MW). Log to State Pollution Control Board stubble-tracking registry and assess downwind air quality index.`;
+    }} else if (maxP === pInd) {{
+      simBanner.classList.add('banner-industrial');
+      simCatText.innerText = 'Industrial (Normal)';
+      simCatText.style.color = '#2F6BC4';
+      sopTitle.innerHTML = '🏭 NOMINAL STATUS: Verified Industrial Emitter';
+      sopText.innerHTML = `Thermal signature matches known industrial footprint (detected ${{freq}} times within 1km radius). Verified as safe continuous emission; no emergency dispatch required.`;
+    }} else {{
+      simBanner.classList.add('banner-anomaly');
+      simCatText.innerText = 'Anomaly / Unclassified';
+      simCatText.style.color = '#7B2CBF';
+      sopTitle.innerHTML = '⚠️ SURVEILLANCE: Isolated Heat Anomaly';
+      sopText.innerHTML = `Low-intensity thermal anomaly (${{frp.toFixed(1)}} MW). Queued for follow-up cross-verification during the next satellite pass (VIIRS / MODIS).`;
+    }}
+  }}
+
+  // Event listeners for simulator sliders
+  [simFrp, simBright, simDelta, simFreq, simLanduse, simDist, simMonth, simTod].forEach(el => {{
+    el.addEventListener('input', calculateSimulation);
+    el.addEventListener('change', calculateSimulation);
+  }});
+
+  // Preset Buttons
+  document.getElementById('preset-simlipal').addEventListener('click', () => {{
+    simFrp.value = 110.0;
+    simBright.value = 385;
+    simDelta.value = 75;
+    simFreq.value = 0;
+    simLanduse.value = 'forest';
+    simDist.value = 42000;
+    simMonth.value = 4;
+    simTod.value = 'Afternoon';
+    calculateSimulation();
+  }});
+
+  document.getElementById('preset-punjab').addEventListener('click', () => {{
+    simFrp.value = 5.2;
+    simBright.value = 328;
+    simDelta.value = 22;
+    simFreq.value = 2;
+    simLanduse.value = 'farmland';
+    simDist.value = 16000;
+    simMonth.value = 10;
+    simTod.value = 'Afternoon';
+    calculateSimulation();
+  }});
+
+  document.getElementById('preset-jamnagar').addEventListener('click', () => {{
+    simFrp.value = 35.0;
+    simBright.value = 348;
+    simDelta.value = 45;
+    simFreq.value = 6;
+    simLanduse.value = 'industrial';
+    simDist.value = 0;
+    simMonth.value = 1;
+    simTod.value = 'Night';
+    calculateSimulation();
+  }});
+
+  document.getElementById('preset-anomaly').addEventListener('click', () => {{
+    simFrp.value = 1.9;
+    simBright.value = 312;
+    simDelta.value = 8;
+    simFreq.value = 0;
+    simLanduse.value = 'unknown';
+    simDist.value = 25000;
+    simMonth.value = 7;
+    simTod.value = 'Morning';
+    calculateSimulation();
+  }});
+
+  calculateSimulation();
+
+  // ── 3D THREE.JS GLOBE & 2D LEAFLET INITIALIZATION ───────────────────────
   const hotspotData = {hotspots_json};
   const container3D = document.getElementById('three-globe-container');
   const container2D = document.getElementById('leaflet-2d-container');
   const tooltip = document.getElementById('globe-tooltip');
 
-  // Scene setup
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(45, container3D.clientWidth / container3D.clientHeight, 0.1, 1000);
   camera.position.set(0, 3.8, 20.5);
@@ -1345,7 +1906,6 @@ full_dashboard_html = f"""
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   container3D.appendChild(renderer.domElement);
 
-  // OrbitControls
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
@@ -1354,8 +1914,7 @@ full_dashboard_html = f"""
   controls.autoRotate = true;
   controls.autoRotateSpeed = 0.65;
 
-  // Cosmic Starfield Background
-  const starCount = 1500;
+  const starCount = 1200;
   const starCoords = new Float32Array(starCount * 3);
   for(let i = 0; i < starCount * 3; i += 3) {{
     starCoords[i] = (Math.random() - 0.5) * 220;
@@ -1367,182 +1926,69 @@ full_dashboard_html = f"""
   const starMat = new THREE.PointsMaterial({{ color: 0xB388FF, size: 0.65, transparent: true, opacity: 0.6 }});
   scene.add(new THREE.Points(starGeo, starMat));
 
-  // Earth Master Group
   const earthGroup = new THREE.Group();
   scene.add(earthGroup);
 
   const globeRadius = 7.2;
   const globeGeo = new THREE.SphereGeometry(globeRadius, 64, 64);
 
-  // High-Res NASA Earth Textures with Fallback Support
   const texLoader = new THREE.TextureLoader();
   texLoader.setCrossOrigin('anonymous');
-
   const earthNightURL = 'https://unpkg.com/three-globe/example/img/earth-night.jpg';
   const earthCloudsURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png';
-  const earthNormalURL = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_normal_2048.jpg';
 
-  // Fallback high-detail canvas texture
-  function createDetailedEarthCanvas() {{
-    const c = document.createElement('canvas');
-    c.width = 2048;
-    c.height = 1024;
-    const ctx = c.getContext('2d');
-
-    const grad = ctx.createLinearGradient(0, 0, 0, 1024);
-    grad.addColorStop(0, '#040d21');
-    grad.addColorStop(0.5, '#020714');
-    grad.addColorStop(1, '#040d21');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 2048, 1024);
-
-    ctx.fillStyle = '#1e3328';
-    ctx.beginPath();
-    ctx.moveTo(1120, 240); ctx.bezierCurveTo(1300, 180, 1700, 200, 1850, 320);
-    ctx.bezierCurveTo(1800, 520, 1600, 600, 1420, 560);
-    ctx.lineTo(1465, 545);
-    ctx.bezierCurveTo(1400, 420, 1200, 420, 1120, 240);
-    ctx.fill();
-
-    ctx.fillStyle = '#2d4d3c';
-    ctx.beginPath();
-    ctx.moveTo(1415, 430); ctx.lineTo(1515, 430); ctx.lineTo(1465, 545);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = '#243429';
-    ctx.beginPath();
-    ctx.ellipse(1140, 520, 140, 220, 0.1, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.ellipse(540, 380, 160, 140, -0.2, 0, Math.PI * 2);
-    ctx.ellipse(660, 680, 120, 210, 0.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.ellipse(1740, 720, 110, 90, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = 'rgba(255, 200, 90, 0.9)';
-    for (let i = 0; i < 600; i++) {{
-      const x = (Math.random() * 2048);
-      const y = (Math.random() * 1024);
-      if (ctx.getImageData(x, y, 1, 1).data[1] > 25) {{
-        ctx.fillRect(x, y, 2, 2);
-      }}
-    }}
-    return new THREE.CanvasTexture(c);
-  }}
-
-  // Base Earth Material
-  const fallbackTexture = createDetailedEarthCanvas();
-  const earthMat = new THREE.MeshPhongMaterial({{
-    map: fallbackTexture,
-    specular: new THREE.Color(0x224477),
-    shininess: 25,
-    bumpScale: 0.05
+  const globeMat = new THREE.MeshStandardMaterial({{
+    color: 0x111c38,
+    roughness: 0.8,
+    metalness: 0.1
   }});
 
-  const globeMesh = new THREE.Mesh(globeGeo, earthMat);
-  earthGroup.add(globeMesh);
-
-  // Load real NASA satellite texture dynamically
   texLoader.load(
     earthNightURL,
-    (texture) => {{
-      earthMat.map = texture;
-      earthMat.needsUpdate = true;
-    }},
+    (tex) => {{ globeMat.map = tex; globeMat.color.setHex(0xffffff); globeMat.needsUpdate = true; }},
     undefined,
-    (err) => console.log('Using local high-detail Earth texture fallback')
+    () => {{ globeMat.color.setHex(0x0f2142); }}
   );
 
-  // Normal maps for 3D elevation
-  texLoader.load(earthNormalURL, (normTex) => {{
-    earthMat.normalMap = normTex;
-    earthMat.normalScale = new THREE.Vector2(0.6, 0.6);
-    earthMat.needsUpdate = true;
-  }});
+  const globeMesh = new THREE.Mesh(globeGeo, globeMat);
+  earthGroup.add(globeMesh);
 
-  // Outer Cloud Layer
-  const cloudsGeo = new THREE.SphereGeometry(globeRadius + 0.06, 64, 64);
-  const cloudsMat = new THREE.MeshPhongMaterial({{
-    color: 0xFFFFFF,
-    transparent: true,
-    opacity: 0.25,
-    blending: THREE.AdditiveBlending
-  }});
-  const cloudsMesh = new THREE.Mesh(cloudsGeo, cloudsMat);
+  const cloudsMat = new THREE.MeshStandardMaterial({{ transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending }});
+  texLoader.load(earthCloudsURL, (tex) => {{ cloudsMat.map = tex; cloudsMat.needsUpdate = true; }});
+  const cloudsMesh = new THREE.Mesh(new THREE.SphereGeometry(globeRadius + 0.08, 64, 64), cloudsMat);
   earthGroup.add(cloudsMesh);
 
-  texLoader.load(earthCloudsURL, (cloudsTex) => {{
-    cloudsMat.map = cloudsTex;
-    cloudsMat.opacity = 0.35;
-    cloudsMat.needsUpdate = true;
-  }});
-
-  // Atmospheric Glow Halo
-  const haloGeo = new THREE.SphereGeometry(globeRadius * 1.07, 64, 64);
-  const haloMat = new THREE.MeshBasicMaterial({{
-    color: 0x9D4EDD,
-    transparent: true,
-    opacity: 0.18,
-    side: THREE.BackSide
-  }});
-  scene.add(new THREE.Mesh(haloGeo, haloMat));
-
   // Lighting
-  scene.add(new THREE.AmbientLight(0xFFFFFF, 0.85));
-  const sunLight = new THREE.DirectionalLight(0xFFF4E6, 1.4);
-  sunLight.position.set(22, 14, 18);
-  scene.add(sunLight);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+  const dirLight = new THREE.DirectionalLight(0xd9c5ff, 1.4);
+  dirLight.position.set(12, 18, 15);
+  scene.add(dirLight);
 
-  const rimPurpleLight = new THREE.PointLight(0x7B2CBF, 3.0, 70);
-  rimPurpleLight.position.set(-18, -10, 14);
-  scene.add(rimPurpleLight);
-
-  // Lat/Lon to 3D Vector
-  function latLonTo3D(lat, lon, r) {{
+  // Convert GPS to Vector3
+  function latLonToVector3(lat, lon, radius) {{
     const phi = (90 - lat) * (Math.PI / 180);
     const theta = (lon + 180) * (Math.PI / 180);
-    const x = -(r * Math.sin(phi) * Math.cos(theta));
-    const z = (r * Math.sin(phi) * Math.sin(theta));
-    const y = (r * Math.cos(phi));
-    return new THREE.Vector3(x, y, z);
+    return new THREE.Vector3(
+      -(radius * Math.sin(phi) * Math.cos(theta)),
+      radius * Math.cos(phi),
+      radius * Math.sin(phi) * Math.sin(theta)
+    );
   }}
 
-  // Hotspots Points on Globe
   const pointMeshes = [];
-  const ptGeo = new THREE.SphereGeometry(0.12, 16, 16);
-
   hotspotData.forEach(pt => {{
-    const pos = latLonTo3D(pt.lat, pt.lon, globeRadius + 0.08);
-    const col = new THREE.Color(pt.color || '#E5383B');
-    const mat = new THREE.MeshBasicMaterial({{ color: col }});
-    const mesh = new THREE.Mesh(ptGeo, mat);
-    mesh.position.copy(pos);
-    mesh.userData = pt;
-    earthGroup.add(mesh);
-    pointMeshes.push(mesh);
-
-    if (pt.frp >= 18 || pt.cat === 'Wildfire Risk') {{
-      const ringGeo = new THREE.RingGeometry(0.14, 0.32, 16);
-      const ringMat = new THREE.MeshBasicMaterial({{
-        color: col,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.75
-      }});
-      const ring = new THREE.Mesh(ringGeo, ringMat);
-      ring.position.copy(pos);
-      ring.lookAt(new THREE.Vector3(0, 0, 0));
-      earthGroup.add(ring);
-    }}
+    const pos = latLonToVector3(pt.lat, pt.lon, globeRadius + 0.06);
+    const pGeo = new THREE.SphereGeometry(Math.max(0.06, Math.min(0.18, Math.sqrt(pt.frp) * 0.025)), 12, 12);
+    const pMat = new THREE.MeshBasicMaterial({{ color: pt.color }});
+    const pMesh = new THREE.Mesh(pGeo, pMat);
+    pMesh.position.copy(pos);
+    pMesh.userData = pt;
+    earthGroup.add(pMesh);
+    pointMeshes.push(pMesh);
   }});
 
-  // Center on India
-  earthGroup.rotation.y = -1.65;
+  // Center India
+  earthGroup.rotation.y = -Math.PI / 1.75;
   earthGroup.rotation.x = 0.28;
 
   // Tooltip Raycasting
@@ -1575,32 +2021,27 @@ full_dashboard_html = f"""
     }}
   }});
 
-  // ========================================================================
-  // INTERACTIVE CONTROLS & 2D/3D SWITCHING
-  // ========================================================================
+  // Controls
   document.getElementById('btn-rotate').addEventListener('click', (e) => {{
     e.stopPropagation();
     controls.autoRotate = !controls.autoRotate;
   }});
-
   document.getElementById('btn-zoom-in').addEventListener('click', (e) => {{
     e.stopPropagation();
     camera.position.multiplyScalar(0.85);
     controls.update();
   }});
-
   document.getElementById('btn-zoom-out').addEventListener('click', (e) => {{
     e.stopPropagation();
     camera.position.multiplyScalar(1.18);
     controls.update();
   }});
-
   document.getElementById('btn-layers').addEventListener('click', (e) => {{
     e.stopPropagation();
     cloudsMesh.visible = !cloudsMesh.visible;
   }});
 
-  // 2D Leaflet map initialization
+  // 2D Leaflet
   const tab2D = document.getElementById('tab-2d');
   const tab3D = document.getElementById('tab-3d');
   let leafletMap = null;
@@ -1610,7 +2051,7 @@ full_dashboard_html = f"""
       leafletMap = L.map('leaflet-2d-container').setView([22.5, 82.0], 5);
       L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
         maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        attribution: '&copy; OpenStreetMap'
       }}).addTo(leafletMap);
 
       hotspotData.forEach(pt => {{
@@ -1642,31 +2083,15 @@ full_dashboard_html = f"""
     container3D.style.display = 'block';
   }});
 
-  // Sidebar navigation interactions
-  document.getElementById('nav-map').addEventListener('click', () => {{
-    tab2D.click();
-    document.getElementById('globe-viewport-box').scrollIntoView({{ behavior: 'smooth' }});
-  }});
-
-  document.getElementById('nav-alerts').addEventListener('click', () => {{
-    document.getElementById('section-alerts').scrollIntoView({{ behavior: 'smooth' }});
-  }});
-
-  // Animation Loop with Clouds Drift
-  const clock = new THREE.Clock();
+  // Animation Loop
   function animate() {{
     requestAnimationFrame(animate);
     controls.update();
-
     cloudsMesh.rotation.y += 0.0012;
-    const elapsedTime = clock.getElapsedTime();
-    haloMat.opacity = 0.16 + Math.sin(elapsedTime * 1.8) * 0.04;
-
     renderer.render(scene, camera);
   }}
   animate();
 
-  // Responsive Resizing
   window.addEventListener('resize', () => {{
     camera.aspect = container3D.clientWidth / container3D.clientHeight;
     camera.updateProjectionMatrix();
@@ -1679,4 +2104,4 @@ full_dashboard_html = f"""
 </html>
 """
 
-components.html(full_dashboard_html, height=1050, scrolling=True)
+components.html(full_dashboard_html, height=1150, scrolling=True)

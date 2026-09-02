@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  fireintel-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fireintel-ai-app
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ALERT_EMAIL_ENABLED=false
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models

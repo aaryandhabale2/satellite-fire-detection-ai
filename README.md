@@ -238,37 +238,43 @@ else:
 
 | Tab | Content |
 |---|---|
-| 🗺️ Live Map | Folium map — clustered markers, colour-coded, click for details |
-| 📈 Trend Chart | Daily hotspot frequency by category over time |
-| 🚨 Alerts | Top 10 Wildfire Risk detections sorted by FRP intensity |
-| 🤖 Model Info | Classification report, confusion matrix, SHAP importance |
+| 🌐 Live Command Center | Photorealistic 3D Earth Globe & 2D Leaflet map with clustered hotspots |
+| ⚡ What-If Scenario Simulator | Live interactive ML inference with custom FRP, sliders, preset buttons & SOP alerts |
+| 📈 Trend Chart | 7-day hotspot frequency and regional risk distribution |
+| 🚨 Alerts Center | Priority Wildfire Risk detections with Google Maps navigation |
+| 📊 Model & SHAP Analytics | High-res confusion matrix, classification report & SHAP feature impact |
 
 ---
 
-## Deploying to Streamlit Community Cloud
+## 🧪 Running the Automated Test Suite
 
-See the **Deployment** section below.
+We maintain a complete `pytest` unit & integration testing suite covering feature transformations, model inference, alert formatting, and geospatial fallbacks:
 
----
-
-## Data Notes
-
-- FIRMS NRT data has ~3 hour latency after satellite overpass
-- The API allows up to 10 days per request
-- OSMnx caches tile responses in `data/osm_cache/` — re-runs are instant
-- For historical data beyond 10 days, use the
-  [FIRMS Archive portal](https://firms.modaps.eosdis.nasa.gov/download/)
+```bash
+# Run full test suite
+pytest -v
+```
 
 ---
 
-## Roadmap
+## 🐳 Docker Deployment
 
-- [x] Step 1 — FIRMS data fetch
-- [x] Step 2 — OSM land-use enrichment
-- [x] Step 3 — Feature engineering + heuristic labelling
-- [x] Step 4 — XGBoost classifier + SHAP explainability
-- [x] Step 5 — Streamlit + Folium + Plotly dashboard
-- [ ] Ground-truth annotation and model fine-tuning
-- [ ] Scheduled auto-refresh (re-fetch FIRMS daily)
-- [ ] Streamlit Cloud deployment
-- [ ] Email / SMS alerts for Wildfire Risk detections
+To build and run FireIntel AI in a self-contained container:
+
+```bash
+# Build and start via Docker Compose
+docker-compose up --build -d
+
+# Access at http://localhost:8501
+```
+
+---
+
+## 🔮 Future Scope & Planned Enhancements
+
+1. **Automated Scheduled FIRMS Auto-Refresh**:
+   - Continuous background worker (Celery / cron daemon) polling NASA FIRMS NRT endpoints every 3 hours as new VIIRS satellite overpass swaths become available.
+2. **Multi-Channel Alert Gateway**:
+   - Integration with Telegram bots, WhatsApp Business API, and automated SMS dispatch directly to District Emergency Operations Centers (DEOCs).
+3. **Ground-Truth Field Annotation & Semi-Supervised Fine-Tuning**:
+   - Ingesting verified incident ground-truth reports from State Forest Departments to iteratively fine-tune XGBoost and deep vision models.
