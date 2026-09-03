@@ -4,58 +4,78 @@ src/fetch_firms_data.py
 Fetches NASA FIRMS thermal hotspot / fire data for India and saves
 the result to data/firms_raw.csv.
 
-The script uses the FIRMS Area API with India's bounding box.
-NASA does not offer a publicly accessible country-code CSV endpoint
-for direct download, so we use the bounding box area endpoint which
-covers all of India (west=68.1, south=7.9, east=97.4, north=35.5).
+Supports multi-satellite sensor fusion:
+  1. VIIRS_SNPP_NRT   -- VIIRS S-NPP (~375 m, near-real-time)
+  2. MODIS_NRT        -- MODIS Terra/Aqua (~1 km, near-real-time)
+  3. VIIRS_NOAA20_NRT -- VIIRS NOAA-20 (~375 m, near-real-time, optional/drop-in)
+
+NOTE ON VIIRS S-NPP SUNSET (Nov 1, 2026):
+NASA is discontinuing VIIRS_SNPP data delivery on November 1, 2026.
+VIIRS_NOAA20_NRT is supported in this pipeline as an active drop-in replacement
+or simultaneous 3rd source to ensure continuous operational readiness.
 
 Usage
 -----
-    # 1. Copy .env.example to .env and fill in your key
-    # 2. Run:
     python src/fetch_firms_data.py
 
 Environment variables
 ---------------------
-    FIRMS_MAP_KEY   -- your NASA FIRMS MAP_KEY (required)
-                       Get one free at:
-                       https://firms.modaps.eosdis.nasa.gov/api/map_key
-    FIRMS_SOURCE    -- satellite source (default: VIIRS_SNPP_NRT)
-    FIRMS_DAY_RANGE -- days of data to fetch, 1-10 (default: 7)
-
-Available FIRMS sources
------------------------
-    VIIRS_SNPP_NRT    -- VIIRS S-NPP,   ~375 m, near-real-time
-    VIIRS_NOAA20_NRT  -- VIIRS NOAA-20, ~375 m, near-real-time
-    VIIRS_NOAA21_NRT  -- VIIRS NOAA-21, ~375 m, near-real-time
-    MODIS_NRT         -- MODIS Terra/Aqua, ~1 km, near-real-time
+    FIRMS_MAP_KEY         -- your NASA FIRMS MAP_KEY (required)
+                             Get one free at: https://firms.modaps.eosdis.nasa.gov/api/map_key
+    FIRMS_DAY_RANGE       -- days of data to fetch (default: 5, max 5 for MODIS Area API)
+    FIRMS_SOURCES         -- comma-separated list of sources to fetch
+                             (default: VIIRS_SNPP_NRT,MODIS_NRT)
+    FIRMS_INCLUDE_NOAA20  -- set "true" to include VIIRS_NOAA20_NRT as 3rd source (default: false)
+    FIRMS_DEDUPLICATE     -- set "true" to merge coincident detections instead of
+                             keeping both as separate confirmations (default: false)
 """
 
 import io
 import os
 import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 # Force UTF-8 output so Unicode characters print correctly on Windows
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from pathlib import Path
-
+import numpy as np
 import pandas as pd
 import requests
+import scipy.spatial
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
-# Load environment variables from .env if it exists
+# Load environment variables
 # ---------------------------------------------------------------------------
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Configuration (read from environment, with sensible defaults)
+# Configuration
 # ---------------------------------------------------------------------------
-MAP_KEY   = os.getenv("FIRMS_MAP_KEY",   "").strip()
-SOURCE    = os.getenv("FIRMS_SOURCE",    "VIIRS_SNPP_NRT")
-DAY_RANGE = os.getenv("FIRMS_DAY_RANGE", "7")
+MAP_KEY = os.getenv("FIRMS_MAP_KEY", "").strip()
+
+# Default to 5 days because NASA FIRMS MODIS Area API caps day range at 5
+DAY_RANGE_RAW = os.getenv("FIRMS_DAY_RANGE", "5").strip()
+
+# Default active sources
+DEFAULT_SOURCES = ["VIIRS_SNPP_NRT", "MODIS_NRT"]
+SOURCES_ENV = os.getenv("FIRMS_SOURCES", "").strip()
+if SOURCES_ENV:
+    ACTIVE_SOURCES = [s.strip() for s in SOURCES_ENV.split(",") if s.strip()]
+else:
+    ACTIVE_SOURCES = list(DEFAULT_SOURCES)
+
+# Toggle for NOAA-20 (prepare for S-NPP sunset on Nov 1, 2026)
+INCLUDE_NOAA20 = os.getenv("FIRMS_INCLUDE_NOAA20", "false").strip().lower() in ("true", "1", "yes")
+if INCLUDE_NOAA20 and "VIIRS_NOAA20_NRT" not in ACTIVE_SOURCES:
+    ACTIVE_SOURCES.append("VIIRS_NOAA20_NRT")
+
+# Duplicate handling toggle:
+# Default False -> preserve both with co_confirmed=True (recommended: multi-sensor confirmation)
+# Set True -> merge pairs into single record, taking higher spatial resolution (VIIRS) and max FRP
+DEDUPLICATE_COINCIDENT = os.getenv("FIRMS_DEDUPLICATE", "false").strip().lower() in ("true", "1", "yes")
 
 # India bounding box: west, south, east, north
 INDIA_BBOX = "68.1,7.9,97.4,35.5"
@@ -63,17 +83,21 @@ INDIA_BBOX = "68.1,7.9,97.4,35.5"
 # FIRMS Area CSV endpoint
 FIRMS_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 
-# Output path
-ROOT        = Path(__file__).resolve().parents[1]
-OUTPUT_DIR  = ROOT / "data"
+# Output paths
+ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = ROOT / "data"
 OUTPUT_FILE = OUTPUT_DIR / "firms_raw.csv"
 
+# Spatial-temporal coincidence thresholds for dual-sensor verification
+COINCIDENT_RADIUS_M = 1000.0   # ~1 km (accounts for MODIS 1 km footprint)
+COINCIDENT_TIME_HOURS = 6.0    # 6 hours max window between orbital overpasses
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Validation & URL Construction
 # ---------------------------------------------------------------------------
 
-def validate_config():
+def validate_config() -> int:
     """Exit early with a clear message if configuration is invalid."""
     if not MAP_KEY:
         print(
@@ -81,164 +105,305 @@ def validate_config():
             "  Steps to fix:\n"
             "    1. Copy .env.example to .env\n"
             "    2. Open .env and set:  FIRMS_MAP_KEY=your_actual_key\n"
-            "    3. Get a free key at:  "
-            "https://firms.modaps.eosdis.nasa.gov/api/map_key\n"
+            "    3. Get a free key at:  https://firms.modaps.eosdis.nasa.gov/api/map_key\n"
         )
         sys.exit(1)
 
     try:
-        day_int = int(DAY_RANGE)
+        day_int = int(DAY_RANGE_RAW)
         if not (1 <= day_int <= 10):
             raise ValueError
     except ValueError:
         print(
             f"[ERROR] FIRMS_DAY_RANGE must be an integer between 1 and 10.\n"
-            f"        Current value: {DAY_RANGE!r}"
+            f"        Current value: {DAY_RANGE_RAW!r}"
         )
         sys.exit(1)
 
-
-def build_url() -> str:
-    """Construct the FIRMS Area CSV request URL."""
-    return f"{FIRMS_URL}/{MAP_KEY}/{SOURCE}/{INDIA_BBOX}/{DAY_RANGE}"
+    return day_int
 
 
-def fetch_firms(url: str) -> pd.DataFrame:
+def build_source_url(source: str, day_range: int) -> Tuple[str, int]:
     """
-    Download the CSV from NASA FIRMS and parse it into a DataFrame.
-    Handles network errors, HTTP errors, and invalid/empty responses.
+    Construct the FIRMS Area CSV request URL for a specific satellite source.
+    Clamps MODIS_NRT to max 5 days due to NASA FIRMS Area API constraints.
     """
-    print("\n[STEP 1] Fetching NASA FIRMS data for India ...")
-    print(f"         Source    : {SOURCE}")
-    print(f"         Day range : {DAY_RANGE} day(s)")
-    print(f"         Bbox      : {INDIA_BBOX}  (India)")
-    print(f"         URL       : {url}\n")
+    effective_days = day_range
+    if source == "MODIS_NRT" and day_range > 5:
+        effective_days = 5
+        print(f"  [NOTE] Clamping MODIS_NRT day range to 5 (NASA FIRMS Area API limit for MODIS).")
 
-    # --- Network request -------------------------------------------------------
+    url = f"{FIRMS_URL}/{MAP_KEY}/{source}/{INDIA_BBOX}/{effective_days}"
+    return url, effective_days
+
+
+# ---------------------------------------------------------------------------
+# Data Fetching
+# ---------------------------------------------------------------------------
+
+def fetch_single_source(source: str, day_range: int) -> pd.DataFrame:
+    """
+    Download CSV from NASA FIRMS for one source and parse into a DataFrame.
+    """
+    url, effective_days = build_source_url(source, day_range)
+    print(f"\n--> Fetching {source} ({effective_days} day(s)) ...")
+    print(f"    URL: {url.replace(MAP_KEY, 'MAP_KEY_HIDDEN')}")
+
     try:
         response = requests.get(url, timeout=60)
-    except requests.exceptions.SSLError as exc:
-        print(f"[ERROR] SSL certificate error connecting to NASA FIRMS.\n  {exc}")
-        print("  --> Try again later or check your network/proxy settings.")
-        sys.exit(1)
-    except requests.exceptions.ConnectionError as exc:
-        print(
-            "[ERROR] Cannot connect to NASA FIRMS server.\n"
-            "  Possible causes:\n"
-            "    • No internet connection\n"
-            "    • NASA FIRMS API is temporarily down\n"
-            "    • A firewall is blocking the request\n"
-            f"  Detail: {exc}"
-        )
-        sys.exit(1)
-    except requests.exceptions.Timeout:
-        print(
-            "[ERROR] Request timed out after 60 s.\n"
-            "  NASA FIRMS may be slow or overloaded. Try again in a few minutes."
-        )
-        sys.exit(1)
     except requests.exceptions.RequestException as exc:
-        print(f"[ERROR] Unexpected network error: {exc}")
-        sys.exit(1)
+        print(f"  [ERROR] Network error fetching {source}: {exc}")
+        return pd.DataFrame()
 
-    # --- HTTP status check -----------------------------------------------------
     if response.status_code != 200:
         print(
-            f"[ERROR] Unexpected HTTP {response.status_code} from FIRMS API.\n"
-            f"        Response: {response.text[:400]}"
+            f"  [ERROR] HTTP {response.status_code} from FIRMS for {source}.\n"
+            f"          Response: {response.text[:200]}"
         )
-        sys.exit(1)
+        return pd.DataFrame()
 
-    # --- Body sanity check (FIRMS returns 200 even for auth errors) ------------
     body = response.text.strip()
-
     if not body:
-        print("[ERROR] FIRMS returned an empty response. Check your API key and quota.")
-        sys.exit(1)
+        print(f"  [WARN] Empty response received for {source}.")
+        return pd.DataFrame()
 
-    if body.lower().startswith("invalid") or "MAP_KEY" in body or "error" in body[:100].lower():
-        print(
-            f"[ERROR] FIRMS API returned an error message:\n"
-            f"        {body[:400]}\n"
-            f"  --> Verify your FIRMS_MAP_KEY is valid and active."
-        )
-        sys.exit(1)
+    if body.lower().startswith("invalid") or "map_key" in body.lower() or "error" in body[:100].lower():
+        print(f"  [ERROR] FIRMS API error message for {source}:\n          {body[:250]}")
+        return pd.DataFrame()
 
-    # --- Parse CSV -------------------------------------------------------------
     try:
         df = pd.read_csv(io.StringIO(body))
     except Exception as exc:
-        print(f"[ERROR] Could not parse the FIRMS response as CSV.\n  {exc}")
-        print(f"  Raw response (first 300 chars):\n  {body[:300]}")
-        sys.exit(1)
+        print(f"  [ERROR] Failed to parse CSV for {source}: {exc}")
+        return pd.DataFrame()
 
+    # Assign metadata
+    if "VIIRS_SNPP" in source:
+        df["satellite_source"] = "VIIRS_SNPP"
+        if "instrument" not in df.columns:
+            df["instrument"] = "VIIRS"
+    elif "MODIS" in source:
+        df["satellite_source"] = "MODIS"
+        if "instrument" not in df.columns:
+            df["instrument"] = "MODIS"
+    elif "NOAA20" in source:
+        df["satellite_source"] = "VIIRS_NOAA20"
+        if "instrument" not in df.columns:
+            df["instrument"] = "VIIRS"
+    else:
+        df["satellite_source"] = source
+
+    # Ensure shared brightness column is available
+    if "bright_ti4" in df.columns and "brightness" not in df.columns:
+        df["brightness"] = df["bright_ti4"]
+    elif "brightness" in df.columns and "bright_ti4" not in df.columns:
+        df["bright_ti4"] = df["brightness"]
+
+    print(f"  [OK] Successfully retrieved {len(df):,} records for {source}.")
     return df
 
 
-def save_csv(df: pd.DataFrame):
-    """Save the DataFrame to data/firms_raw.csv."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_csv(OUTPUT_FILE, index=False)
-    print(f"[OK] Saved {len(df):,} records to {OUTPUT_FILE}\n")
+# ---------------------------------------------------------------------------
+# Duplicate / Co-Confirmation Handling
+# ---------------------------------------------------------------------------
 
+def detect_coincident_hotspots(df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+    """
+    Identifies multi-sensor coincident detections within ~1 km (matching MODIS footprint)
+    and within 6 hours of each other on the same day.
 
-def print_summary(df: pd.DataFrame):
-    """Print a human-readable summary so the user can verify the output."""
-    print("=" * 60)
-    print("  FIRMS DATA SUMMARY — firms_raw.csv")
-    print("=" * 60)
+    Handling Strategy:
+      - Default (DEDUPLICATE_COINCIDENT=False):
+        Multi-Sensor Co-Confirmation (Preserve Both + Tag `co_confirmed=True`).
+        Preserves temporal evolution across overpasses (Terra morning, Aqua afternoon,
+        VIIRS afternoon) and strengthens historical frequency without discarding data.
+      - Deduplication Mode (DEDUPLICATE_COINCIDENT=True):
+        Merges coincident pairs into one record, retaining higher-resolution VIIRS coordinates
+        and taking the maximum FRP across both sensors.
+    """
+    if len(df) == 0:
+        df["co_confirmed"] = False
+        return df, 0
 
-    print(f"  Total records  : {len(df):,}")
-    print(f"  Columns ({len(df.columns)})   : {list(df.columns)}\n")
+    df = df.copy().reset_index(drop=True)
+    df["co_confirmed"] = False
 
-    # Date range
-    if "acq_date" in df.columns:
-        df["acq_date"] = pd.to_datetime(df["acq_date"], errors="coerce")
-        min_d = df["acq_date"].min().date()
-        max_d = df["acq_date"].max().date()
-        print(f"  Date range     : {min_d}  to  {max_d}")
-    else:
-        print("  Date range     : (acq_date column not found)")
+    # Convert coordinates to projected meters for KDTree
+    lat_rad = np.radians(df["latitude"].values)
+    lon_rad = np.radians(df["longitude"].values)
+    x = 6371000.0 * lon_rad * np.cos(lat_rad)
+    y = 6371000.0 * lat_rad
 
-    # Brightness temperature (VIIRS uses bright_ti4; MODIS uses brightness)
-    for col in ("bright_ti4", "brightness"):
-        if col in df.columns:
-            s = df[col].dropna()
-            print(f"  {col:<14} : min={s.min():.1f}  max={s.max():.1f}  mean={s.mean():.1f} K")
+    coords = np.column_stack([x, y])
+    tree = scipy.spatial.cKDTree(coords)
+    candidate_pairs = tree.query_pairs(r=COINCIDENT_RADIUS_M)
 
-    # Fire Radiative Power
-    if "frp" in df.columns:
-        s = df["frp"].dropna()
-        print(f"  frp (MW)       : min={s.min():.1f}  max={s.max():.1f}  mean={s.mean():.1f}")
+    # Parse acquisition times into minutes from midnight
+    def parse_time_minutes(val) -> float:
+        try:
+            s = str(int(val)).zfill(4)
+            h = int(s[:2])
+            m = int(s[2:])
+            return h * 60.0 + m
+        except Exception:
+            return 0.0
 
-    # Confidence breakdown
-    if "confidence" in df.columns:
-        counts = df["confidence"].value_counts().to_dict()
-        print(f"  confidence     : {counts}")
+    times_min = df["acq_time"].apply(parse_time_minutes).values
+    dates = df["acq_date"].astype(str).values
+    sources = df["satellite_source"].values
 
-    # Day / night split
-    if "daynight" in df.columns:
-        counts = df["daynight"].value_counts().to_dict()
-        print(f"  daynight       : {counts}")
+    co_confirmed_indices: Set[int] = set()
+    pairs_to_merge: List[Tuple[int, int]] = []
 
-    print("=" * 60)
-    print()
-    print("[DONE] firms_raw.csv is ready in data/")
-    print("       Verify the summary above looks correct before")
-    print("       moving on to Step 2 (OSM land-use enrichment).")
-    print()
+    for i, j in candidate_pairs:
+        # Must be from different satellite sources
+        if sources[i] != sources[j]:
+            # Must be same acquisition date
+            if dates[i] == dates[j]:
+                # Must be within time window (default 6 hours)
+                dt_hours = abs(times_min[i] - times_min[j]) / 60.0
+                if dt_hours <= COINCIDENT_TIME_HOURS:
+                    co_confirmed_indices.add(i)
+                    co_confirmed_indices.add(j)
+                    pairs_to_merge.append((i, j))
+
+    for idx in co_confirmed_indices:
+        df.loc[idx, "co_confirmed"] = True
+
+    if not DEDUPLICATE_COINCIDENT:
+        return df, len(co_confirmed_indices)
+
+    # If deduplication mode is requested:
+    # Retain the higher-resolution VIIRS record, take max FRP, and drop the MODIS record
+    drop_indices = set()
+    for i, j in pairs_to_merge:
+        if i in drop_indices or j in drop_indices:
+            continue
+        # Check which one is VIIRS
+        src_i, src_j = sources[i], sources[j]
+        if "VIIRS" in src_i and "MODIS" in src_j:
+            viirs_idx, modis_idx = i, j
+        elif "MODIS" in src_i and "VIIRS" in src_j:
+            viirs_idx, modis_idx = j, i
+        else:
+            viirs_idx, modis_idx = i, j
+
+        # Merge FRP to maximum observed
+        if "frp" in df.columns:
+            frp_max = max(float(df.loc[viirs_idx, "frp"]), float(df.loc[modis_idx, "frp"]))
+            df.loc[viirs_idx, "frp"] = frp_max
+
+        df.loc[viirs_idx, "satellite_source"] = f"{df.loc[viirs_idx, 'satellite_source']}+MODIS"
+        drop_indices.add(modis_idx)
+
+    deduped_df = df.drop(index=list(drop_indices)).reset_index(drop=True)
+    print(f"  [DEDUPLICATION] Merged {len(drop_indices)} coincident MODIS detections into VIIRS records.")
+    return deduped_df, len(co_confirmed_indices)
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Output & Summary
+# ---------------------------------------------------------------------------
+
+def save_csv(df: pd.DataFrame):
+    """Save the combined DataFrame to data/firms_raw.csv."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUTPUT_FILE, index=False)
+    print(f"\n[OK] Saved combined {len(df):,} records to {OUTPUT_FILE}")
+
+
+def print_summary(
+    df: pd.DataFrame,
+    source_counts: Dict[str, int],
+    viirs_count_before: int,
+    co_confirmed_count: int,
+):
+    """Print an end-to-end human readable summary of the multi-satellite ingestion."""
+    print("\n" + "=" * 65)
+    print("  FIRMS MULTI-SATELLITE DATA SUMMARY — firms_raw.csv")
+    print("=" * 65)
+
+    print(f"  Active Sources Fetched   : {', '.join(ACTIVE_SOURCES)}")
+    print(f"  Total Hotspots (VIIRS)   : {viirs_count_before:,}  (before adding MODIS)")
+    print(f"  Total Hotspots Combined  : {len(df):,}  (after adding MODIS)")
+
+    diff = len(df) - viirs_count_before
+    pct = (diff / viirs_count_before * 100) if viirs_count_before > 0 else 0
+    print(f"  Net Observation Increase : +{diff:,} (+{pct:.1f}%)")
+
+    print("\n  Breakdown by Satellite Source:")
+    for src, count in source_counts.items():
+        print(f"    - {src:<18}: {count:,} ({count / len(df) * 100:.1f}%)")
+
+    print(f"\n  Multi-Sensor Cross Confirmations (within ~1km & 6h):")
+    print(f"    - Co-confirmed hotspots: {co_confirmed_count:,}")
+    strategy_str = "Strict Merged" if DEDUPLICATE_COINCIDENT else "Preserved both as independent confirmations (Flagged)"
+    print(f"    - Duplicate Strategy   : {strategy_str}")
+
+    # S-NPP Sunset Alert
+    print("\n  [FUTURE-PROOFING] NASA VIIRS S-NPP Discontinuation:")
+    print("    - Notice: NASA is discontinuing VIIRS_SNPP data delivery on November 1, 2026.")
+    if "VIIRS_NOAA20_NRT" in ACTIVE_SOURCES:
+        print("    - Status: VIIRS_NOAA20_NRT is ALREADY ACTIVE and ingesting in this build.")
+    else:
+        print("    - Status: VIIRS_NOAA20_NRT is ready. Enable via FIRMS_INCLUDE_NOAA20=true.")
+
+    # Radiometric statistics
+    print("\n  Combined Sensor Radiometrics:")
+    if "brightness" in df.columns:
+        s = df["brightness"].dropna()
+        print(f"    - brightness (K)       : min={s.min():.1f}  max={s.max():.1f}  mean={s.mean():.1f}")
+    if "frp" in df.columns:
+        s = df["frp"].dropna()
+        print(f"    - frp (MW)             : min={s.min():.1f}  max={s.max():.1f}  mean={s.mean():.1f}")
+
+    print("=" * 65)
+    print("\n[STEP 1 COMPLETE] Multi-satellite data is ready in data/firms_raw.csv.\n")
+
+
+# ---------------------------------------------------------------------------
+# Main Entry Point
 # ---------------------------------------------------------------------------
 
 def main():
-    validate_config()
-    url = build_url()
-    df  = fetch_firms(url)
-    save_csv(df)
-    print_summary(df)
+    day_range = validate_config()
+
+    print("\n" + "=" * 65)
+    print("  NASA FIRMS MULTI-SATELLITE INGESTION PIPELINE")
+    print(f"  Target Area: India ({INDIA_BBOX})")
+    print("=" * 65)
+
+    source_dfs: List[pd.DataFrame] = []
+    source_counts: Dict[str, int] = {}
+
+    # 1. Fetch each source
+    for source in ACTIVE_SOURCES:
+        df_src = fetch_single_source(source, day_range)
+        if not df_src.empty:
+            source_dfs.append(df_src)
+            source_name = df_src["satellite_source"].iloc[0]
+            source_counts[source_name] = len(df_src)
+
+    if not source_dfs:
+        print("\n[ERROR] No data could be retrieved from any configured satellite source.")
+        sys.exit(1)
+
+    # 2. Merge all datasets
+    combined_df = pd.concat(source_dfs, ignore_index=True)
+
+    # Count VIIRS before adding MODIS
+    viirs_count_before = sum(
+        count for src, count in source_counts.items() if "VIIRS" in src
+    )
+
+    # 3. Detect / handle coincident detections
+    final_df, co_confirmed_count = detect_coincident_hotspots(combined_df)
+
+    # 4. Save to CSV
+    save_csv(final_df)
+
+    # 5. Print comprehensive summary
+    print_summary(final_df, source_counts, viirs_count_before, co_confirmed_count)
 
 
 if __name__ == "__main__":

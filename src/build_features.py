@@ -60,6 +60,7 @@ Usage
     python src/build_features.py
 """
 
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -77,14 +78,29 @@ import pandas as pd
 # Paths
 # ---------------------------------------------------------------------------
 ROOT        = Path(__file__).resolve().parents[1]
-INPUT_FILE  = ROOT / "data" / "hotspots_with_landuse.csv"
-OUTPUT_FILE = ROOT / "data" / "features_labeled.csv"
+
+# ── Env-var overrides: point at archive files without modifying NRT pipeline ──
+# Default (NRT): data/hotspots_with_landuse.csv  → data/features_labeled.csv
+# Archive mode:  set env vars before running:
+#   FIRMS_FEATURES_INPUT=data/hotspots_with_landuse_archive.csv
+#   FIRMS_FEATURES_OUTPUT=data/features_labeled_archive.csv
+INPUT_FILE  = Path(os.getenv("FIRMS_FEATURES_INPUT",  str(ROOT / "data" / "hotspots_with_landuse.csv")))
+OUTPUT_FILE = Path(os.getenv("FIRMS_FEATURES_OUTPUT", str(ROOT / "data" / "features_labeled.csv")))
 
 # ---------------------------------------------------------------------------
 # Thresholds for heuristic labelling
 # ---------------------------------------------------------------------------
-HIGH_FREQ_THRESH = 3     # >= 3 detections at same ~1 km location -> persistent
-REPEAT_THRESH    = 2     # >= 2 detections -> "repeated" (for agri burning rule)
+# NOTE: Thresholds are calibrated for the ARCHIVE dataset (1 full year).
+# With ~130,000+ rows across 365 days, a location appearing 3x is NOT
+# persistent — it could be a single multi-day burn event.  We raise the
+# bar to 5+ detections (meaning the same ~1 km cell fired on 5+ separate
+# days across the year) to confidently label it "Industrial (Normal)".
+#
+# For NRT data (<10 days, ~475 rows), the old thresholds of 3/2 were
+# appropriate.  They are preserved in comments for reference.
+_ARCHIVE_MODE = "archive" in str(INPUT_FILE).lower()
+HIGH_FREQ_THRESH = 5 if _ARCHIVE_MODE else 3   # NRT=3, Archive=5
+REPEAT_THRESH    = 3 if _ARCHIVE_MODE else 2   # NRT=2, Archive=3
 HIGH_FRP_THRESH  = 50.0  # MW — "high intensity" fire
 AGRI_MONTHS      = {10, 11}  # October and November (post-kharif stubble burning)
 NEAR_IND_DIST_M  = 1_000     # within 1 km of industry -> consider "industrial"
@@ -130,13 +146,10 @@ def compute_historical_frequency(df: pd.DataFrame) -> pd.Series:
     # Count total occurrences per bucket (across entire dataset)
     bucket_counts = df.groupby(["_blat", "_blon"]).size()
 
-    # Map bucket count back to each hotspot and subtract 1 (the hotspot itself)
-    freq = df.apply(
-        lambda row: bucket_counts.get((row["_blat"], row["_blon"]), 1) - 1,
-        axis=1,
-    )
+    # Fast vectorized map back to each hotspot and subtract 1
+    freq = df.set_index(["_blat", "_blon"]).index.map(bucket_counts) - 1
 
-    return freq.astype(int)
+    return pd.Series(freq, index=df.index).astype(int)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +268,7 @@ def main():
         raise SystemExit(1)
 
     print(f"\n[STEP 3] Loading {INPUT_FILE.name} ...")
-    df = pd.read_csv(INPUT_FILE)
+    df = pd.read_csv(INPUT_FILE, low_memory=False)
     df = df.dropna(subset=["latitude", "longitude"]).reset_index(drop=True)
     print(f"         {len(df):,} records loaded.\n")
 
@@ -264,7 +277,11 @@ def main():
     df["month"]    = df["acq_date"].dt.month.fillna(6).astype(int)
 
     # ── 3. Brightness column — VIIRS uses bright_ti4, MODIS uses brightness ─
-    if "bright_ti4" in df.columns:
+    if "bright_ti4" in df.columns and "brightness" in df.columns:
+        df["brightness"] = df["bright_ti4"].combine_first(df["brightness"])
+        df["brightness"] = df["brightness"].fillna(df["brightness"].median())
+        print("  [INFO] Harmonized 'brightness' across VIIRS (bright_ti4) and MODIS (brightness).")
+    elif "bright_ti4" in df.columns:
         df["brightness"] = df["bright_ti4"].fillna(df["bright_ti4"].median())
         print("  [INFO] Using 'bright_ti4' as brightness column (VIIRS data).")
     elif "brightness" in df.columns:
@@ -274,35 +291,55 @@ def main():
         df["brightness"] = 300.0  # safe default
         print("  [WARN] No brightness column found — defaulting to 300 K.")
 
-    # ── 3b. Delta brightness (bright_ti4 - bright_ti5) ─────────────────────
-    # The difference between channel 4 (mid-IR) and channel 5 (long-wave IR)
-    # is a classic satellite fire detection signal used in VIIRS active-fire
-    # algorithms — genuine fires show large positive delta.
-    if "bright_ti5" in df.columns:
-        ti5 = df["bright_ti5"].fillna(df["bright_ti5"].median())
-        df["delta_brightness"] = (df["brightness"] - ti5).round(3)
-        print(f"  [INFO] 'delta_brightness' computed. "
-              f"Range: {df['delta_brightness'].min():.1f} – {df['delta_brightness'].max():.1f} K")
-    else:
-        df["delta_brightness"] = 0.0
-        print("  [WARN] 'bright_ti5' not found — delta_brightness defaulting to 0.")
+    # ── 3b. Delta brightness (dual-sensor split-window IR difference) ───────
+    # For VIIRS: bright_ti4 (mid-IR) - bright_ti5 (long-wave IR)
+    # For MODIS: brightness (Ch 21/22 4um) - bright_t31 (Ch 31 11um)
+    delta_b = pd.Series(0.0, index=df.index)
+    if "bright_ti4" in df.columns and "bright_ti5" in df.columns:
+        viirs_mask = df["bright_ti4"].notna() & df["bright_ti5"].notna()
+        delta_b[viirs_mask] = df.loc[viirs_mask, "bright_ti4"] - df.loc[viirs_mask, "bright_ti5"]
+    if "brightness" in df.columns and "bright_t31" in df.columns:
+        modis_mask = df["brightness"].notna() & df["bright_t31"].notna()
+        if "bright_ti4" in df.columns:
+            modis_mask = modis_mask & df["bright_ti4"].isna()
+        delta_b[modis_mask] = df.loc[modis_mask, "brightness"] - df.loc[modis_mask, "bright_t31"]
 
-    # ── 3c. Confidence encoding ─────────────────────────────────────────────
-    # VIIRS stores confidence as 'l' (low), 'n' (nominal), 'h' (high).
-    # Map to a numeric scale for use as a model feature.
+    pos_median = delta_b[delta_b > 0].median() if (delta_b > 0).any() else 15.0
+    delta_b = delta_b.replace(0.0, pos_median)
+    df["delta_brightness"] = delta_b.round(3)
+    print(f"  [INFO] 'delta_brightness' computed for dual sensors. "
+          f"Range: {df['delta_brightness'].min():.1f} – {df['delta_brightness'].max():.1f} K")
+
+    # ── 3c. Confidence encoding (VIIRS categorical + MODIS numeric) ─────────
     CONF_MAP = {"l": 0, "low": 0, "n": 1, "nominal": 1, "h": 2, "high": 2}
+    def encode_confidence(val):
+        s = str(val).strip().lower()
+        if s in CONF_MAP:
+            return CONF_MAP[s]
+        try:
+            num = float(val)
+            if num >= 80:
+                return 2   # High confidence
+            elif num >= 30:
+                return 1   # Nominal confidence
+            else:
+                return 0   # Low confidence
+        except (ValueError, TypeError):
+            return 1
+
     if "confidence" in df.columns:
-        df["confidence_enc"] = (
-            df["confidence"]
-            .astype(str).str.lower().str.strip()
-            .map(CONF_MAP)
-            .fillna(1)   # default to nominal if unknown
-            .astype(int)
-        )
+        df["confidence_enc"] = df["confidence"].apply(encode_confidence).astype(int)
         print(f"  [INFO] 'confidence_enc' computed: {df['confidence_enc'].value_counts().to_dict()}")
     else:
         df["confidence_enc"] = 1  # assume nominal
         print("  [WARN] 'confidence' column not found — confidence_enc defaulting to 1.")
+
+    # ── 3d. Co-confirmation feature ─────────────────────────────────────────
+    if "co_confirmed" in df.columns:
+        df["co_confirmed"] = df["co_confirmed"].astype(bool).astype(int)
+        print(f"  [INFO] 'co_confirmed' feature encoded: {df['co_confirmed'].value_counts().to_dict()}")
+    else:
+        df["co_confirmed"] = 0
 
     # Clip FRP to non-negative values
     df["frp"]     = df["frp"].clip(lower=0).fillna(0.0)
@@ -338,23 +375,55 @@ def main():
     print(f"      {df['season'].value_counts().to_dict()}")
 
     # ── 8. Assign heuristic category label ────────────────────────────────
-    print("  --> Assigning heuristic category labels ...")
-    df["category"] = df.apply(assign_category, axis=1)
+    print("  --> Assigning heuristic category labels (vectorized) ...")
+    lu        = df["land_use_type"].fillna("unknown").astype(str).str.lower()
+    frp_vals  = df["frp"].fillna(0.0).values
+    dist_ind  = df["distance_to_industrial"].fillna(50_000.0).values
+    hist_freq = df["historical_frequency"].fillna(0).values
+
+    is_industrial = (lu == "industrial") | (dist_ind < NEAR_IND_DIST_M)
+    is_forest     = lu.isin(["forest", "wood"])
+    is_farmland   = lu.isin(["farmland", "farmyard", "orchard"])
+
+    cats = np.full(len(df), "Anomaly/Unclassified", dtype=object)
+
+    # Rule 1: Industrial (Normal) — persistent stationary thermal emitter
+    ind_mask = (hist_freq >= HIGH_FREQ_THRESH) | (is_industrial & (hist_freq >= 1))
+    cats[ind_mask] = "Industrial (Normal)"
+
+    # Rule 2: Wildfire Risk — high FRP + sudden onset + non-industrial
+    wf_frp_thresh = 14.0 if _ARCHIVE_MODE else 7.0
+    wf_mask = (
+        ~ind_mask
+        & ((frp_vals >= wf_frp_thresh) | (is_forest & (frp_vals >= 4.0)))
+        & (hist_freq <= 1)
+        & (~is_industrial)
+    )
+    cats[wf_mask] = "Wildfire Risk"
+
+    # Rule 3: Agricultural Burning — clustered / repeated field burns
+    repeat_max = 5 if _ARCHIVE_MODE else 3
+    agri_mask = (
+        ~ind_mask
+        & ~wf_mask
+        & (((hist_freq >= 1) & (hist_freq < repeat_max) & (frp_vals < wf_frp_thresh))
+           | (is_farmland & (hist_freq >= 1)))
+    )
+    cats[agri_mask] = "Agricultural Burning"
+
+    df["category"] = cats
 
     # ── 8b. Optional label noise injection ────────────────────────────────
-    # Randomly flip a small fraction of labels to simulate real-world
-    # annotation imperfection and prevent the model from trivially memorising
-    # the deterministic heuristic thresholds.
     if INJECT_LABEL_NOISE and LABEL_NOISE_FRAC > 0:
         rng = np.random.default_rng(NOISE_RANDOM_SEED)
-        all_categories = df["category"].unique().tolist()
+        all_categories = np.array(list(df["category"].unique()))
         n_flip = max(1, int(len(df) * LABEL_NOISE_FRAC))
-        flip_idx = rng.choice(df.index, size=n_flip, replace=False)
-        for idx in flip_idx:
-            current = df.at[idx, "category"]
-            candidates = [c for c in all_categories if c != current]
-            df.at[idx, "category"] = rng.choice(candidates)
-        print(f"  [NOISE] Flipped {n_flip} labels (~{LABEL_NOISE_FRAC*100:.0f}%) "
+        flip_idx = rng.choice(len(df), size=n_flip, replace=False)
+        random_replacements = rng.choice(all_categories, size=n_flip)
+        cat_arr = df["category"].values.copy()
+        cat_arr[flip_idx] = random_replacements
+        df["category"] = cat_arr
+        print(f"  [NOISE] Flipped {n_flip:,} labels (~{LABEL_NOISE_FRAC*100:.0f}%) "
               f"to simulate annotation noise.")
 
     # ── 9. Select columns to save ─────────────────────────────────────────

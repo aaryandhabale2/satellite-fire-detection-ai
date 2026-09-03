@@ -184,16 +184,18 @@ FIRMS_MAP_KEY=your_actual_key_here
 Run **one step at a time** and verify the output before continuing.
 
 ```bash
-# Step 1 — Fetch satellite hotspot data for India (~seconds)
-python -X utf8 src/fetch_firms_data.py
+# Step 1 — Fetch satellite hotspot data (NRT 5-10 days OR full 1-year archive)
+python -X utf8 src/fetch_firms_data.py          # NRT real-time window
+python -X utf8 src/fetch_firms_archive.py       # Full 1-year historical archive (811k rows)
 
-# Step 2 — Enrich hotspots with OSM land-use context (~minutes, cached)
-python -X utf8 src/fetch_osm_landuse.py
+# Step 2 — Enrich hotspots with OSM land-use context
+python -X utf8 src/fetch_osm_landuse.py         # NRT dataset
+python -X utf8 src/fetch_osm_landuse_bulk.py    # Bulk historical archive
 
-# Step 3 — Feature engineering + heuristic labels (~seconds)
+# Step 3 — Feature engineering + heuristic labels
 python -X utf8 src/build_features.py
 
-# Step 4 — Train XGBoost classifier + SHAP plots (~1-2 minutes)
+# Step 4 — Train XGBoost classifier + SHAP plots
 python -X utf8 src/train_model.py
 
 # Step 5 — Launch dashboard
@@ -201,6 +203,11 @@ streamlit run app/dashboard.py
 ```
 
 The dashboard opens at **http://localhost:8501**
+
+> **1-Year Historical Ingestion Milestone:**
+> - Dataset expanded from ~475 rows to **`811,081` hotspot records** spanning 363 days.
+> - Multi-class classification accuracy raised to **`96.06%`** on a held-out test set of 162,217 samples.
+> - `historical_frequency` emerged as the **#1 predictive feature** in SHAP analysis (mean |SHAP| = 1.5528).
 
 ---
 

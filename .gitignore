@@ -4,11 +4,15 @@
 .env
 .streamlit/secrets.toml
 
-# Generated data (raw dumps ignored, features table tracked for demo/cloud deployment)
+# Generated data (raw dumps and large 800k archive datasets ignored)
 data/firms_raw.csv
 data/hotspots_with_landuse.csv
 data/osm_cache/
-!data/features_labeled.csv
+data/archive_chunks/
+data/*archive*.csv
+data/*old_nrt*.csv
+data/features_labeled.csv
+data/features_labeled_archive.csv
 
 # Trained model artifacts (tracked for Streamlit Cloud)
 !models/fire_classifier.pkl

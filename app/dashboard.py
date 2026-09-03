@@ -19,8 +19,12 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import shap
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -173,29 +177,22 @@ if not df_raw.empty:
 
 recent_alerts_html = "".join(alerts_items) if alerts_items else "<div style='padding:15px;color:#888;'>No critical alerts at this time.</div>"
 
-# Top Regions
+# Top Regions (Fast vectorized zone assignment)
 regions_items = []
-if not df_raw.empty and "latitude" in df_raw.columns:
-    def approximate_zone(row):
-        lat = row["latitude"]
-        lon = row["longitude"]
-        if lat < 14.0:
-            return "Southern Zone (TN/KL/KA)"
-        elif lat < 20.0 and lon < 78.0:
-            return "Maharashtra / Western Ghats"
-        elif lat < 20.0 and lon >= 78.0:
-            return "Eastern Deccan (AP/Telangana)"
-        elif lat < 25.0 and lon < 75.0:
-            return "Gujarat / West Coast"
-        elif lat < 25.0 and lon >= 75.0:
-            return "Central India (MP/CG/OD)"
-        elif lat >= 25.0 and lon < 78.0:
-            return "Northwest (PB/HR/RJ)"
-        else:
-            return "Gangetic Plain (UP/BR/WB)"
+if not df_raw.empty and "latitude" in df_raw.columns and "longitude" in df_raw.columns:
+    lats = df_raw["latitude"].values
+    lons = df_raw["longitude"].values
+    zones = np.full(len(df_raw), "Gangetic Plain (UP/BR/WB)", dtype=object)
 
-    zone_series = df_raw.apply(approximate_zone, axis=1).value_counts().head(5)
-    max_count = zone_series.max() if not zone_series.empty else 1
+    zones[lats < 14.0] = "Southern Zone (TN/KL/KA)"
+    zones[(lats >= 14.0) & (lats < 20.0) & (lons < 78.0)] = "Maharashtra / Western Ghats"
+    zones[(lats >= 14.0) & (lats < 20.0) & (lons >= 78.0)] = "Eastern Deccan (AP/Telangana)"
+    zones[(lats >= 20.0) & (lats < 25.0) & (lons < 75.0)] = "Gujarat / West Coast"
+    zones[(lats >= 20.0) & (lats < 25.0) & (lons >= 75.0)] = "Central India (MP/CG/OD)"
+    zones[(lats >= 25.0) & (lons < 78.0)] = "Northwest (PB/HR/RJ)"
+
+    zone_series = pd.Series(zones).value_counts().head(5)
+    max_count = int(zone_series.max()) if not zone_series.empty else 1
     for rank, (zone_name, count) in enumerate(zone_series.items(), start=1):
         prog_pct = max(15, round((count / max_count) * 100))
         regions_items.append(f"""
@@ -203,19 +200,20 @@ if not df_raw.empty and "latitude" in df_raw.columns:
           <div class="region-rank">{rank}</div>
           <div class="region-label">{zone_name}</div>
           <div class="region-bar-bg"><div class="region-bar-prog" style="width:{prog_pct}%;"></div></div>
-          <div class="region-num">{count}</div>
+          <div class="region-num">{count:,}</div>
         </div>
         """)
 
 top_regions_html = "".join(regions_items)
 
-# 7-day Trend SVG
+# Recent Trend SVG (Most recent 7 active observation days)
 trend_labels = []
 trend_counts = []
 if not df_raw.empty and "acq_date" in df_raw.columns:
-    daily_counts = df_raw.groupby(df_raw["acq_date"].dt.strftime("%b %d")).size()
-    trend_labels = list(daily_counts.index)[-7:]
-    trend_counts = list(daily_counts.values)[-7:]
+    daily_s = df_raw.groupby(df_raw["acq_date"].dt.date).size().sort_index()
+    last_7 = daily_s.tail(7)
+    trend_labels = [d.strftime("%b %d") for d in last_7.index]
+    trend_counts = list(last_7.values)
 
 while len(trend_labels) < 7:
     trend_labels.insert(0, f"Day {len(trend_labels)+1}")
@@ -241,7 +239,7 @@ polyline_pts = " ".join(pts)
 trend_svg_code = f"""
 <polyline points="{polyline_pts}" fill="none" stroke="#7B2CBF" stroke-width="2.5"/>
 {''.join(dots_svg)}
-<text x="295" y="15" text-anchor="middle" font-size="10" font-weight="800" fill="#7B2CBF">{trend_counts[-1]}</text>
+<text x="295" y="15" text-anchor="middle" font-size="10" font-weight="800" fill="#7B2CBF">{trend_counts[-1]:,}</text>
 {''.join(labels_svg)}
 """
 
@@ -2565,4 +2563,376 @@ full_dashboard_html = f"""
 </html>
 """
 
-components.html(full_dashboard_html, height=1150, scrolling=True)
+# ---------------------------------------------------------------------------
+# WHAT-IF SIMULATOR ENGINE (Native Streamlit Component with Live SHAP)
+# ---------------------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def get_shap_explainer(_model):
+    return shap.TreeExplainer(_model)
+
+def generate_shap_explanation_text(pred_label, feature_names, shap_values, row_dict):
+    impacts = list(zip(feature_names, shap_values))
+    positives = sorted([item for item in impacts if item[1] > 0], key=lambda x: x[1], reverse=True)
+    negatives = sorted([item for item in impacts if item[1] < 0], key=lambda x: x[1])
+
+    FRIENDLY_NAMES = {
+        "frp": "Fire Radiative Power (FRP)",
+        "log_frp": "High Thermal Energy (log-FRP)",
+        "brightness": "Elevated Brightness Temperature",
+        "delta_brightness": "Split-Window IR Thermal Contrast",
+        "historical_frequency": "Historical Recurrence Rate",
+        "distance_to_industrial": "Distance to Industrial Infrastructure",
+        "land_use_type_enc": "OSM Land-Use Context",
+        "time_of_day_enc": "Diurnal Overpass Timing",
+        "season_enc": "Seasonal Climate Factor",
+        "confidence_enc": "Satellite Radiometric Confidence",
+        "co_confirmed": "Multi-Sensor Co-Confirmation",
+    }
+
+    pos_phrases = []
+    for feat, val in positives[:2]:
+        name = FRIENDLY_NAMES.get(feat, feat)
+        pos_phrases.append(f"<b>{name}</b> (impact: +{val:.2f})")
+
+    neg_phrases = []
+    for feat, val in negatives[:1]:
+        name = FRIENDLY_NAMES.get(feat, feat)
+        neg_phrases.append(f"<b>{name}</b> (counter: {val:.2f})")
+
+    summary = f"This hotspot was classified as <b>{pred_label}</b> primarily driven by {' and '.join(pos_phrases) if pos_phrases else 'baseline radiometric indicators'}"
+    if neg_phrases:
+        summary += f", despite counter-evidence from {' and '.join(neg_phrases)}."
+    else:
+        summary += "."
+    return summary
+
+def render_what_if_simulator(model_bundle: dict | None):
+    st.markdown("""
+    <style>
+    .sim-banner {
+        background: linear-gradient(135deg, #180D30 0%, #2A1550 100%);
+        border: 1px solid #7C3AED;
+        border-radius: 16px;
+        padding: 22px 28px;
+        color: white;
+        margin-bottom: 24px;
+        box-shadow: 0 10px 25px rgba(26, 11, 46, 0.25);
+    }
+    .sim-header-title {
+        font-size: 24px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .sim-header-sub {
+        font-size: 13px;
+        color: #CBB9EC;
+        margin-top: 5px;
+    }
+    .verdict-card {
+        border-radius: 18px;
+        padding: 26px;
+        color: white;
+        text-align: center;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+    .sop-alert-box {
+        margin-top: 16px;
+        padding: 14px 16px;
+        background: rgba(0, 0, 0, 0.28);
+        border-radius: 12px;
+        font-size: 12px;
+        line-height: 1.55;
+        text-align: left;
+        border-left: 4px solid rgba(255, 255, 255, 0.6);
+    }
+    </style>
+    <div class="sim-banner">
+        <div class="sim-header-title">⚡ What-If Scenario Simulator & Manual Hotspot Predictor</div>
+        <div class="sim-header-sub">Simulate custom satellite thermal hotspots and evaluate live multi-class XGBoost predictions with confidence percentages and emergency SOP response.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not model_bundle:
+        st.warning("⚠️ Model bundle `fire_classifier.pkl` not found. Please train the model first.")
+        return
+
+    model = model_bundle["model"]
+    encoders = model_bundle["encoders"]
+    feat_cols = model_bundle["feature_cols"]
+    target_le = encoders["target"]
+    classes = list(target_le.classes_)
+
+    # Preset update helper
+    def set_preset(p_frp, p_brt, p_delta, p_land, p_freq, p_tod, p_sea, p_dist, p_lat, p_lon):
+        st.session_state["p_frp"] = float(p_frp)
+        st.session_state["p_brt"] = float(p_brt)
+        st.session_state["p_delta"] = float(p_delta)
+        st.session_state["p_land"] = p_land
+        st.session_state["p_freq"] = int(p_freq)
+        st.session_state["p_tod"] = p_tod
+        st.session_state["p_sea"] = p_sea
+        st.session_state["p_dist"] = int(p_dist)
+        st.session_state["p_lat"] = float(p_lat)
+        st.session_state["p_lon"] = float(p_lon)
+
+    # Initialize preset values in session_state if not present
+    if "p_frp" not in st.session_state:
+        set_preset(55.0, 352.0, 45.0, "forest", 0, "Afternoon", "Summer", 35000, 21.80, 86.35)
+
+    # ── Demonstration Presets Bar ──────────────────────────────────────────
+    st.markdown("##### ⚡ Quick Demonstration Presets:")
+    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+    with col_p1:
+        if st.button("🔥 Forest Wildfire", use_container_width=True, help="Simulate uncontained forest wildfire (Simlipal National Park)"):
+            set_preset(75.0, 368.0, 56.0, "forest", 0, "Afternoon", "Summer", 42000, 21.85, 86.35)
+            st.rerun()
+    with col_p2:
+        if st.button("🏭 Industrial Flare", use_container_width=True, help="Simulate persistent industrial refinery stack (Jamnagar)"):
+            set_preset(24.0, 332.0, 22.0, "industrial", 14, "Night", "Winter", 0, 22.47, 69.83)
+            st.rerun()
+    with col_p3:
+        if st.button("🌾 Farmland Stubble", use_container_width=True, help="Simulate seasonal crop residue stubble burning (Punjab)"):
+            set_preset(15.0, 334.0, 26.0, "farmland", 2, "Afternoon", "Post-Monsoon", 18000, 30.90, 75.85)
+            st.rerun()
+    with col_p4:
+        if st.button("🟡 Thermal Anomaly", use_container_width=True, help="Simulate an isolated, low-intensity background heat anomaly (Thar)"):
+            set_preset(3.5, 308.0, 12.0, "unknown", 0, "Night", "Monsoon", 28000, 26.20, 71.50)
+            st.rerun()
+
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+    col_params, col_verdict = st.columns([1.15, 0.85], gap="large")
+
+    with col_params:
+        st.markdown("#### 🎛️ Simulation Input Controls")
+        
+        c_lat, c_lon = st.columns(2)
+        with c_lat:
+            lat = st.number_input("Latitude (°N)", min_value=6.0, max_value=38.0, value=st.session_state["p_lat"], step=0.01, format="%.2f", help="Hotspot geographical latitude")
+        with c_lon:
+            lon = st.number_input("Longitude (°E)", min_value=68.0, max_value=98.0, value=st.session_state["p_lon"], step=0.01, format="%.2f", help="Hotspot geographical longitude")
+
+        c_frp, c_brt = st.columns(2)
+        with c_frp:
+            frp = st.slider("FRP — Fire Radiative Power (MW)", min_value=0.5, max_value=150.0, value=st.session_state["p_frp"], step=0.5, help="Radiative heat release intensity in Megawatts")
+        with c_brt:
+            bright = st.slider("Brightness Temperature (K)", min_value=290.0, max_value=480.0, value=st.session_state["p_brt"], step=1.0, help="4-micron thermal channel sensor temperature")
+
+        land_opts = ["forest", "industrial", "farmland", "residential", "unknown"]
+        curr_land_idx = land_opts.index(st.session_state["p_land"]) if st.session_state["p_land"] in land_opts else 0
+        c_land, c_freq = st.columns(2)
+        with c_land:
+            land_use = st.selectbox("Land-Use Type (OSM Context)", options=land_opts, index=curr_land_idx)
+        with c_freq:
+            freq = st.slider("Historical Frequency", min_value=0, max_value=25, value=st.session_state["p_freq"], help="Past thermal detections at this ~1km grid in the monitoring window")
+
+        tod_opts = ["Afternoon", "Morning", "Evening", "Night"]
+        curr_tod_idx = tod_opts.index(st.session_state["p_tod"]) if st.session_state["p_tod"] in tod_opts else 0
+        sea_opts = ["Summer", "Winter", "Monsoon", "Post-Monsoon"]
+        curr_sea_idx = sea_opts.index(st.session_state["p_sea"]) if st.session_state["p_sea"] in sea_opts else 0
+        c_tod, c_sea = st.columns(2)
+        with c_tod:
+            tod = st.selectbox("Time of Day", options=tod_opts, index=curr_tod_idx)
+        with c_sea:
+            season = st.selectbox("Season", options=sea_opts, index=curr_sea_idx)
+
+        # Advanced thermal physics expander
+        with st.expander("🔬 Sensor Radiometrics & Multi-Satellite Verification", expanded=True):
+            c_delta, c_dist = st.columns(2)
+            with c_delta:
+                delta_b = st.slider("Split-Window IR ΔT (K)", min_value=0.0, max_value=90.0, value=st.session_state["p_delta"], step=0.5, help="Mid-IR minus Long-Wave IR temperature difference")
+            with c_dist:
+                dist_ind = st.slider("Distance to Nearest Industrial Site (m)", min_value=0, max_value=50000, value=st.session_state["p_dist"], step=500)
+            co_conf = st.checkbox("Multi-Sensor Co-Confirmation (Detected by both VIIRS & MODIS)", value=True, help="Toggles cross-satellite dual sensor confirmation")
+
+    # Map season to month
+    season_month_map = {"Summer": 4, "Monsoon": 7, "Post-Monsoon": 10, "Winter": 1}
+    month = season_month_map.get(season, 4)
+    log_frp = float(np.log1p(frp))
+
+    # Assemble feature vector
+    row_dict = {
+        "brightness": float(bright),
+        "frp": float(frp),
+        "log_frp": log_frp,
+        "distance_to_industrial": float(dist_ind),
+        "historical_frequency": int(freq),
+        "month": int(month),
+        "scan": 0.4,
+        "track": 0.4,
+        "confidence_enc": 2,
+        "delta_brightness": float(delta_b),
+        "co_confirmed": 1 if co_conf else 0,
+        "land_use_type": land_use,
+        "time_of_day": tod,
+        "season": season,
+    }
+
+    # Apply encoders
+    for cat_col in ["land_use_type", "time_of_day", "season"]:
+        if cat_col in encoders:
+            le = encoders[cat_col]
+            val = row_dict[cat_col]
+            enc_val = int(le.transform([val])[0]) if val in le.classes_ else 0
+            row_dict[f"{cat_col}_enc"] = enc_val
+
+    # Align with model bundle feature columns and enforce float dtypes
+    available_feats = [c for c in feat_cols if c in row_dict]
+    X_pred = pd.DataFrame([[row_dict[c] for c in available_feats]], columns=available_feats).astype(float)
+
+    # Perform live inference
+    probs = model.predict_proba(X_pred)[0]
+    pred_idx = int(np.argmax(probs))
+    pred_label = target_le.inverse_transform([pred_idx])[0]
+    confidence = float(probs[pred_idx] * 100)
+
+    CAT_METAS = {
+        "Wildfire Risk": {
+            "icon": "🔴",
+            "color": "#DC2626",
+            "bg": "linear-gradient(135deg, #7F1D1D 0%, #DC2626 100%)",
+            "sop": "🚨 PRIORITY ALPHA DISPATCH: Immediate escalation to District Emergency Operations Center (DEOC) & State Forest Fire Force. High-intensity thermal plume detected in non-industrial terrain.",
+        },
+        "Agricultural Burning": {
+            "icon": "🟠",
+            "color": "#D97706",
+            "bg": "linear-gradient(135deg, #78350F 0%, #D97706 100%)",
+            "sop": "🌾 FARM RESIDUE MONITOR: Seasonal post-harvest stubble burning observed. Routed to Tehsil Agriculture Registry and regional AQI plume trajectory tracking.",
+        },
+        "Industrial (Normal)": {
+            "icon": "⚫",
+            "color": "#4B5563",
+            "bg": "linear-gradient(135deg, #1F2937 0%, #4B5563 100%)",
+            "sop": "🏭 VERIFIED INDUSTRIAL EMITTER: Persistent stationary thermal signature co-located with registered industrial furnace/flare coordinates. Alert suppressed to eliminate false alarms.",
+        },
+        "Anomaly/Unclassified": {
+            "icon": "🟡",
+            "color": "#CA8A04",
+            "bg": "linear-gradient(135deg, #713F12 0%, #CA8A04 100%)",
+            "sop": "🔍 UNCLASSIFIED HEAT ANOMALY: Atypical thermal profile requiring secondary satellite verification swath or UAV reconnaissance.",
+        },
+    }
+    meta = CAT_METAS.get(pred_label, CAT_METAS["Anomaly/Unclassified"])
+
+    with col_verdict:
+        st.markdown("#### 🤖 Live XGBoost AI Verdict")
+        st.markdown(f"""
+        <div class="verdict-card" style="background: {meta['bg']};">
+            <div style="font-size: 42px; margin-bottom: 2px;">{meta['icon']}</div>
+            <div style="font-size: 28px; font-weight: 800; letter-spacing: -0.5px;">{pred_label}</div>
+            <div style="font-size: 14.5px; opacity: 0.95; margin-top: 6px; font-weight: 600;">
+                Model Confidence: <span style="font-size: 22px; font-weight: 800;">{confidence:.1f}%</span>
+            </div>
+            <div class="sop-alert-box">
+                {meta['sop']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+        st.markdown("##### 📊 Multi-Class Probability Distribution")
+
+        prob_df = pd.DataFrame({
+            "Category": classes,
+            "Probability (%)": [probs[i] * 100 for i in range(len(classes))],
+        }).sort_values(by="Probability (%)", ascending=False)
+
+        for _, r in prob_df.iterrows():
+            c_name = r["Category"]
+            p_val = r["Probability (%)"]
+            m = CAT_METAS.get(c_name, CAT_METAS["Anomaly/Unclassified"])
+            st.write(f"{m['icon']} **{c_name}** — **{p_val:.1f}%**")
+            st.progress(min(1.0, max(0.0, p_val / 100.0)))
+
+    # ── SHAP Decision Attribution (Waterfall / Force Plot) ─────────────────
+    st.markdown("<hr style='margin: 32px 0 20px 0; border: none; border-top: 1.5px solid #ECE5F9;'>", unsafe_allow_html=True)
+    st.markdown("#### 🔬 Live SHAP Decision Attribution (Feature Force Plot)")
+    st.caption("Visualizing exact marginal Shapley contributions driving this specific prediction toward or away from the predicted class (Red bars push toward the class, Blue bars push away).")
+
+    try:
+        explainer = get_shap_explainer(model)
+        sv = explainer(X_pred)
+        row_exp = sv[0, :, pred_idx]
+
+        FEATURE_DISPLAY_NAMES = {
+            "frp": "FRP (Fire Power)",
+            "log_frp": "Log(FRP)",
+            "brightness": "Brightness Temp",
+            "delta_brightness": "Split-Window IR ΔT",
+            "historical_frequency": "Historical Freq",
+            "distance_to_industrial": "Distance to Industry",
+            "land_use_type_enc": "Land-Use Type",
+            "time_of_day_enc": "Time of Day",
+            "season_enc": "Season",
+            "confidence_enc": "Confidence Level",
+            "co_confirmed": "Co-Confirmed Detections",
+            "scan": "Scan Angle",
+            "track": "Track Resolution",
+            "month": "Calendar Month",
+        }
+        row_exp.feature_names = [FEATURE_DISPLAY_NAMES.get(c, c) for c in available_feats]
+
+        fig, ax = plt.subplots(figsize=(10, 3.8), dpi=120)
+        shap.plots.waterfall(row_exp, max_display=7, show=False)
+        plt.title(f"SHAP Marginal Attribution for: {pred_label}", fontsize=12.5, fontweight="bold", pad=12, color="#2A1F45")
+        plt.tight_layout()
+        st.pyplot(fig, clear_figure=True)
+        plt.close(fig)
+
+        # Plain-language explanation summary
+        summary_text = generate_shap_explanation_text(pred_label, available_feats, row_exp.values, row_dict)
+        st.markdown(f"""
+        <div style="background: #FAF8FE; border: 1.5px solid #D8B4FE; border-radius: 12px; padding: 14px 18px; margin-top: 10px; font-size: 13.5px; color: #2A1F45; line-height: 1.6;">
+            💡 <b>Plain-Language Summary:</b> {summary_text}
+        </div>
+        """, unsafe_allow_html=True)
+    except Exception as e:
+        st.info(f"SHAP attribution computation: {e}")
+
+
+
+# ---------------------------------------------------------------------------
+# STYLES & MAIN TABS RENDERING
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #F3EEFB;
+        padding: 6px 8px;
+        border-radius: 12px;
+        border: 1px solid #E4DBF7;
+        margin-bottom: 12px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 42px;
+        border-radius: 8px;
+        color: #4C336C;
+        font-weight: 700;
+        font-size: 13.5px;
+        padding: 0 18px;
+        transition: all 0.2s ease;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%) !important;
+        color: white !important;
+        box-shadow: 0 4px 12px rgba(124, 58, 237, 0.25);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+tab_live, tab_sim = st.tabs([
+    "🌐 Live Command Center & 3D Earth",
+    "⚡ What-If Simulator & Model Predictor"
+])
+
+with tab_live:
+    components.html(full_dashboard_html, height=1150, scrolling=True)
+
+with tab_sim:
+    render_what_if_simulator(model_bundle)
+

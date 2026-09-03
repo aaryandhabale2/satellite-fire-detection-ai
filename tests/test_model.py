@@ -64,7 +64,8 @@ def test_model_inference_prediction():
         "scan": 0.4,
         "track": 0.4,
         "confidence_enc": 2,
-        "delta_brightness": 70.0
+        "delta_brightness": 70.0,
+        "co_confirmed": 1
     }])
 
     # Encode categorical features

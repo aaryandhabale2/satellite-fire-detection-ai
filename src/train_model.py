@@ -26,6 +26,7 @@ Usage
     python src/train_model.py
 """
 
+import os
 import pickle
 import sys
 import warnings
@@ -75,10 +76,17 @@ from xgboost import XGBClassifier
 # Paths
 # ---------------------------------------------------------------------------
 ROOT          = Path(__file__).resolve().parents[1]
-FEATURES_FILE = ROOT / "data"   / "features_labeled.csv"
+DATA_DIR      = ROOT / "data"
 MODEL_DIR     = ROOT / "models"
+
+# ── Env-var overrides: point at archive files without touching NRT results ──
+# Default (NRT): data/features_labeled.csv  + models/model_report.txt
+# Archive mode:  set env vars before running:
+#   FIRMS_TRAIN_INPUT=data/features_labeled_archive.csv
+#   FIRMS_TRAIN_REPORT=models/model_report_archive.txt
+FEATURES_FILE = Path(os.getenv("FIRMS_TRAIN_INPUT",  str(DATA_DIR  / "features_labeled.csv")))
 MODEL_FILE    = MODEL_DIR / "fire_classifier.pkl"
-REPORT_FILE   = MODEL_DIR / "model_report.txt"
+REPORT_FILE   = Path(os.getenv("FIRMS_TRAIN_REPORT", str(MODEL_DIR / "model_report.txt")))
 CM_FILE       = MODEL_DIR / "confusion_matrix.png"
 SHAP_FILE     = MODEL_DIR / "shap_summary.png"
 LC_FILE       = MODEL_DIR / "learning_curve.png"
@@ -105,10 +113,11 @@ CATEGORICAL_FEATURES = [
 
 # Optional numeric columns — included if present in the CSV
 OPTIONAL_NUMERIC = [
-    "scan",              # VIIRS scan pixel size
-    "track",             # VIIRS track pixel size
-    "confidence_enc",    # encoded detection confidence (l=0, n=1, h=2)
-    "delta_brightness",  # bright_ti4 - bright_ti5 (genuine fire signal)
+    "scan",              # VIIRS/MODIS scan pixel size
+    "track",             # VIIRS/MODIS track pixel size
+    "confidence_enc",    # encoded detection confidence (0=low, 1=nominal, 2=high)
+    "delta_brightness",  # dual-sensor split-window IR difference (genuine fire signal)
+    "co_confirmed",      # multi-sensor confirmation (1 = detected by both VIIRS & MODIS, 0 = single satellite)
 ]
 
 TARGET_COL = "category"
@@ -222,23 +231,29 @@ def train_model(X: pd.DataFrame, y: np.ndarray, class_names: list) -> XGBClassif
         n_jobs           = -1,
     )
 
-    # 5-fold cross-validation reference
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    print("\n  Running 5-fold CV on baseline model ...")
+    # 5-fold cross-validation reference (subsample to 50,000 for fast CV if dataset is large)
+    if len(X) > 50_000:
+        print(f"\n  [INFO] Dataset has {len(X):,} samples. Using representative stratified 50,000 subset for CV & search...")
+        X_sub, _, y_sub, _ = train_test_split(X, y, train_size=50_000, random_state=42, stratify=y)
+    else:
+        X_sub, y_sub = X, y
+
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+    print("\n  Running 3-fold CV on baseline model ...")
     for metric_name, scoring in [("Accuracy", "accuracy"), ("F1-macro", "f1_macro")]:
-        scores = cross_val_score(base_model, X, y, cv=cv, scoring=scoring, n_jobs=-1)
+        scores = cross_val_score(base_model, X_sub, y_sub, cv=cv, scoring=scoring, n_jobs=-1)
         print(f"    CV {metric_name:<12}: {scores.mean():.4f}  (+/- {scores.std():.4f})")
 
     # ── RandomizedSearchCV ───────────────────────────────────────────────
     param_dist = {
-        "n_estimators"    : [100, 150, 200, 300],
+        "n_estimators"    : [100, 150, 200],
         "max_depth"       : [3, 4, 5],
-        "learning_rate"   : [0.03, 0.05, 0.08, 0.1],
-        "subsample"       : [0.7, 0.8, 0.9],
-        "colsample_bytree": [0.7, 0.8, 1.0],
-        "min_child_weight": [3, 5, 7],
-        "gamma"           : [0.1, 0.3, 0.5],
-        "reg_lambda"      : [1.0, 2.0, 3.0],
+        "learning_rate"   : [0.05, 0.08, 0.1],
+        "subsample"       : [0.8, 0.9],
+        "colsample_bytree": [0.8, 1.0],
+        "min_child_weight": [3, 5],
+        "gamma"           : [0.1, 0.3],
+        "reg_lambda"      : [1.0, 2.0],
     }
 
     search_model = XGBClassifier(
@@ -250,11 +265,12 @@ def train_model(X: pd.DataFrame, y: np.ndarray, class_names: list) -> XGBClassif
         n_jobs            = -1,
     )
 
-    print("\n  Running RandomizedSearchCV (10 combos x 3-fold) ...")
+    n_iter_search = 10 if len(X) > 50_000 else 25
+    print(f"\n  Running RandomizedSearchCV ({n_iter_search} combos x 3-fold) ...")
     rscv = RandomizedSearchCV(
         estimator          = search_model,
         param_distributions= param_dist,
-        n_iter             = 10,
+        n_iter             = n_iter_search,
         cv                 = StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         scoring            = "f1_macro",
         refit              = True,
@@ -262,7 +278,7 @@ def train_model(X: pd.DataFrame, y: np.ndarray, class_names: list) -> XGBClassif
         n_jobs             = -1,
         verbose            = 0,
     )
-    rscv.fit(X, y)
+    rscv.fit(X_sub, y_sub)
     print(f"    Best F1-macro (CV): {rscv.best_score_:.4f}")
     print(f"    Best params: {rscv.best_params_}")
 
@@ -343,10 +359,15 @@ def plot_learning_curve(model: XGBClassifier, X: pd.DataFrame, y: np.ndarray):
     curves converging as more data is added.
     """
     print("\n  Plotting learning curve ...")
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    if len(X) > 50_000:
+        X_plot, _, y_plot, _ = train_test_split(X, y, train_size=30_000, random_state=42, stratify=y)
+    else:
+        X_plot, y_plot = X, y
+
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     train_sizes, train_scores, val_scores = learning_curve(
-        model, X, y,
-        train_sizes=np.linspace(0.2, 1.0, 8),
+        model, X_plot, y_plot,
+        train_sizes=np.linspace(0.2, 1.0, 5),
         cv=cv,
         scoring="f1_macro",
         n_jobs=-1,
@@ -503,8 +524,8 @@ def main():
     # ── 6. Learning curve ──────────────────────────────────────────────
     plot_learning_curve(model, X, y)
 
-    # ── 7. SHAP — use test set (up to 500 rows) ─────────────────────────
-    shap_sample = X_test.sample(min(500, len(X_test)), random_state=42)
+    # ── 7. SHAP — use test set (up to 2000 rows for better importance estimate) ──
+    shap_sample = X_test.sample(min(2000, len(X_test)), random_state=42)
     compute_shap(model, shap_sample, class_names)
 
     # ── 8. Save model bundle ───────────────────────────────────────────────
