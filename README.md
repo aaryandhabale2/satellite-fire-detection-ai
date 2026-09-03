@@ -90,21 +90,24 @@ hotspot into one of four categories and displays results on a live dashboard.
 ```
 SIH/
 ├── src/
-│   ├── fetch_firms_data.py      # Step 1 — fetch NASA FIRMS hotspots
-│   ├── fetch_osm_landuse.py     # Step 2 — OSM land-use enrichment
-│   ├── build_features.py        # Step 3 — feature engineering + labelling
-│   └── train_model.py           # Step 4 — XGBoost + SHAP
+│   ├── fetch_firms_data.py         # Step 1a — NRT real-time fetch (~5-10 days)
+│   ├── fetch_firms_archive.py      # Step 1b — 1-Year historical archive (811k rows)
+│   ├── fetch_osm_landuse.py        # Step 2a — Live OSM land-use enrichment
+│   ├── fetch_osm_landuse_bulk.py   # Step 2b — Bulk land-use enrichment pipeline
+│   ├── build_features.py           # Step 3  — High-throughput feature engineering & labels
+│   └── train_model.py              # Step 4  — Tuned XGBoost + SHAP explainability
 ├── app/
-│   └── dashboard.py             # Step 5 — Streamlit dashboard
-├── data/                        # auto-generated (git-ignored)
+│   └── dashboard.py                # Step 5  — Photorealistic 3D Globe + 2D Leaflet dashboard
+├── data/                           # auto-generated (git-ignored)
 │   ├── firms_raw.csv
 │   ├── hotspots_with_landuse.csv
 │   ├── features_labeled.csv
-│   └── osm_cache/               # OSMnx tile cache
-├── models/                      # auto-generated (git-ignored)
+│   └── osm_cache/                  # OSMnx tile cache
+├── models/                         # auto-generated / tracked
 │   ├── fire_classifier.pkl
 │   ├── confusion_matrix.png
 │   ├── shap_summary.png
+│   ├── learning_curve.png
 │   └── model_report.txt
 ├── .env.example
 ├── requirements.txt
